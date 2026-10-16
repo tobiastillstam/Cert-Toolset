@@ -1,0 +1,26 @@
+# Run output (logs, transcripts, reports)
+Logs/
+*.log
+*.csv
+
+# Certificate material - never commit keys or exported certs
+*.pfx
+*.p12
+*.key
+*.pem
+*.cer
+*.crt
+*.der
+*.p7b
+*.csr
+
+# Local tests and lab data (kept local, not published)
+Tests/
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
+*.tmp
+*~
