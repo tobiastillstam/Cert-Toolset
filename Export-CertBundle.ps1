@@ -20,6 +20,8 @@
 
     A transcript of every run is written to the Logs folder.
 
+    Exit code: 0 when every selected certificate was exported, 1 when any failed.
+
     Supports -WhatIf and -Confirm.
 
 .PARAMETER Thumbprint
@@ -67,12 +69,13 @@
     Author        : Tobias Tillstam, Tillnet
     Webpage       : https://tillnet.se
     GitHub        : https://github.com/tobiastillstam
-    Version       : 1.0.0
+    Version       : 1.0.1
     Date Created  : 2026-10-16
     Last Modified : 2026-10-16
 
     Change Log
     ----------
+    1.0.1 (2026-10-16) - Exit code 1 when any export failed.
     1.0.0 (2026-10-16) - Initial release.
 
     Operational notes:
@@ -749,6 +752,7 @@ function Get-KeyExportStatus {
 Write-Verbose "Starting $($MyInvocation.MyCommand.Name)"
 
 $TranscriptStarted = $false
+$ExitCode = 0
 
 try {
     $ErrorActionPreference = 'Stop'
@@ -924,6 +928,7 @@ try {
     Write-Log ''
     Write-Log ('----- Summary: {0} exported, {1} failed{2} -----' -f $Counts.Exported, $Counts.Failed,
         $(if ($Counts.Skipped) { ", $($Counts.Skipped) skipped (WhatIf)" } else { '' }))
+    if ($Counts.Failed -gt 0) { $ExitCode = 1 }
 
     Write-Log "=== $ScriptBaseName end ==="
 }
@@ -935,3 +940,5 @@ finally {
     if ($TranscriptStarted) { Stop-ToolsetTranscript }
     Write-Verbose "Finished $($MyInvocation.MyCommand.Name)"
 }
+
+exit $ExitCode

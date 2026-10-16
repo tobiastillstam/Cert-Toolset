@@ -23,6 +23,23 @@ All notable changes to this project are documented here. The format is based on
 - Native encrypted PEM export (PBES2, PBKDF2-SHA256 + AES-256-CBC).
 - `CertToolset.config.example.json`, `PSScriptAnalyzerSettings.psd1`.
 
+### Changed (after the elevated test round, 2026-10-16)
+- `Complete-CertRequest.ps1` 1.1.0: CA certificates are collected from all
+  response files first, so a leaf-only response no longer fails when its chain
+  is in another file of the same run. Only the CAs of the certificate's own
+  chain are installed; the log names the file each CA came from.
+- `Complete-CertRequest.ps1`: `certreq -accept` always gets the leaf only, so it
+  no longer copies the root CA into `Cert:\LocalMachine\CA` from a `.p7b`.
+- `Complete-CertRequest.ps1`: `-WhatIf` shows the planned PFX/PEM exports and
+  warns about existing export files.
+- `Complete-CertRequest.ps1` and `Export-CertBundle.ps1` (1.0.1): exit code 1
+  when a response or export failed.
+- `Complete-CertRequest.ps1`: clear error for files that are not certificates.
+- `New-CertRequest.ps1` 1.1.0: short host names (no domain) allowed as CN and
+  `-DnsName`, with a warning.
+- README: wildcard example for `Export-CertBundle.ps1 -FriendlyName` fixed
+  (`[*].contoso.com*`; the Friendly Name keeps the `*`).
+
 ### Fixed (compared to the original scripts)
 - Test: the "Key Usage present" check also matched "Enhanced Key Usage".
 - Complete: every response was reported as failed under `-WhatIf`.

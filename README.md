@@ -30,10 +30,10 @@ Export-CertBundle.ps1    ->  re-export an installed certificate later
 
 | Script | Purpose | Admin |
 |---|---|---|
-| `New-CertRequest.ps1` | Builds a certreq INF and CSR. CN can be an FQDN, wildcard or IP; extra DNS and IP SANs. Key stays pending in `Cert:\LocalMachine\REQUEST`. | Yes |
+| `New-CertRequest.ps1` | Builds a certreq INF and CSR. CN can be an FQDN, short host name (warning), wildcard or IP; extra DNS and IP SANs. Key stays pending in `Cert:\LocalMachine\REQUEST`. | Yes |
 | `Test-CertRequest.ps1` | Decodes CSRs (file or folder) and checks key, hash, SANs, CN-in-SAN, Key Usage, EKU, Subject and signature. Exit code 1 on failure. | **No** |
-| `Complete-CertRequest.ps1` | Installs CA responses (`.cer` `.crt` `.pem` `.p7b`, full chain OK) with `certreq -accept`, adds missing intermediates, checks the chain is trusted (opt-in `-InstallRootCA`), optional PFX/PEM export, moves responses to `Completed\`. Optional cleanup of stale pending requests. | Yes |
-| `Export-CertBundle.ps1` | Lists or exports installed certificates (by thumbprint or Friendly Name) as PFX/PEM. | Yes |
+| `Complete-CertRequest.ps1` | Installs CA responses (`.cer` `.crt` `.pem` `.p7b`, full chain OK) with `certreq -accept`, adds missing intermediates, checks the chain is trusted (opt-in `-InstallRootCA`), optional PFX/PEM export, moves responses to `Completed\`. A leaf-only response can use the chain from another response file in the same run. Optional cleanup of stale pending requests. Exit code 1 on failure. | Yes |
+| `Export-CertBundle.ps1` | Lists or exports installed certificates (by thumbprint or Friendly Name) as PFX/PEM. Exit code 1 on failure. | Yes |
 
 Every script supports `-WhatIf`, `-Confirm` and `-Verbose`, and writes a
 transcript to `Logs\`. Run `Get-Help .\<script>.ps1 -Full` for all parameters.
@@ -56,9 +56,10 @@ notepad .\CertToolset.config.json
 # 3. After the CA replies: put the file in .\Responses, then
 .\Complete-CertRequest.ps1 -ExportPfx -ExportPem
 
-# Later: export again
+# Later: export again. A wildcard's Friendly Name starts with '*' (only the file
+# names use 'wildcard.'), so match the literal '*' with [*].
 .\Export-CertBundle.ps1 -List
-.\Export-CertBundle.ps1 -FriendlyName 'wildcard.contoso.com*' -Format Pem
+.\Export-CertBundle.ps1 -FriendlyName '[*].contoso.com*' -Format Pem
 ```
 
 ---
@@ -123,7 +124,9 @@ openssl pkey -in name.pem -out name.key
 
 - Windows PowerShell 5.1 or PowerShell 7 on Windows (.NET Framework 4.7.2+).
 - An **elevated** session, except `Test-CertRequest.ps1`.
-- Tested on Windows 11 (PS 5.1 and 7.6). PEM output verified with OpenSSL.
+- Tested elevated on Windows 11 (PS 5.1 and 7.6) against the Local Machine
+  store with a lab CA (root + issuing CA). PFX and PEM output verified with
+  OpenSSL.
 
 ---
 
@@ -135,6 +138,8 @@ openssl pkey -in name.pem -out name.key
 | `The CA chain is not trusted on this machine` | Checked before certreq runs; the log lists the steps. Root in the response file: confirm its thumbprint with the CA owner, then run again with `-InstallRootCA`. Otherwise add the root (and intermediates) to the response file, or import them into `Cert:\LocalMachine\Root` / `CA`. |
 | `The chain is incomplete` (warning) | An intermediate/root is missing locally; the export holds only what was found. |
 | `Export file already exists` | Use `-Force`, or export again with `Export-CertBundle.ps1`. |
+| `Not a readable certificate file` | The response is not DER, Base64/PEM or PKCS#7 (e.g. an HTML page or a text mail saved as `.cer`). Get the certificate file again from the CA. |
+| Retiring a root CA | Remove it from `Cert:\LocalMachine\Root` **and** check `Cert:\LocalMachine\CA`: a `.p7b` imported by hand (or with an older toolset version) can leave a copy there. |
 
 ---
 

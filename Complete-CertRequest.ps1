@@ -7,14 +7,17 @@
     exports each certificate as PFX and/or PEM.
 
 .DESCRIPTION
-    For every CA response in the Responses folder (.cer, .crt, .pem, .p7b, .p7c):
+    First, the CA certificates of all response files are collected, so a response
+    that holds only the certificate can use a chain that came in another file of
+    the same batch. Then, for every CA response in the Responses folder (.cer,
+    .crt, .pem, .p7b, .p7c):
       1. Reads all certificates in the file (DER, Base64/PEM, PKCS#7, full-chain
          PEM) and finds the one whose public key matches a pending request in
          Cert:\LocalMachine\REQUEST (created by New-CertRequest.ps1).
-      2. With -InstallRootCA: adds a root CA certificate from the response file to
-         Cert:\LocalMachine\Root if it is not trusted yet. Then installs
-         intermediate CA certificates from the file into Cert:\LocalMachine\CA
-         when they are missing.
+      2. With -InstallRootCA: adds the root CA of the certificate's chain to
+         Cert:\LocalMachine\Root if it is not trusted yet and is in one of the
+         response files. Then installs the missing intermediate CA certificates of
+         the chain into Cert:\LocalMachine\CA.
       3. Checks that the chain ends in a trusted root. If not, stops for that
          file and shows what to do (instead of a bare certreq error).
       4. Installs it with "certreq -accept -machine", which binds it to the pending
@@ -37,6 +40,9 @@
     together with their private keys.
 
     A transcript of every run is written to the Logs folder.
+
+    Exit code: 0 when every response was completed (or already installed) and
+    every export succeeded, 1 when any response or export failed.
 
     Supports -WhatIf and -Confirm.
 
@@ -98,12 +104,19 @@
     Author        : Tobias Tillstam, Tillnet
     Webpage       : https://tillnet.se
     GitHub        : https://github.com/tobiastillstam
-    Version       : 1.0.0
+    Version       : 1.1.0
     Date Created  : 2026-09-04
     Last Modified : 2026-10-16
 
     Change Log
     ----------
+    1.1.0 (2026-10-16) - CA certificates are collected from all response files
+                          first (a leaf-only response no longer fails when its chain
+                          is in another file of the batch); only the CAs of the
+                          certificate's own chain are installed; certreq -accept
+                          always gets the leaf only, so it no longer copies the root
+                          into Cert:\LocalMachine\CA; -WhatIf shows the planned
+                          exports; exit code 1 when a response or export failed.
     1.0.0 (2026-10-16) - Renamed from Complete_CSR.ps1 and reworked for Cert-Toolset:
                           JSON config, transcript logging, no password parameter
                           (dialog/console prompt per certificate), exports are
@@ -128,8 +141,15 @@
       SYSTEM and the account running the script. If it already exists with a
       broader ACL, a warning is shown (the ACL is not changed).
     - Root CAs are only trusted with -InstallRootCA, and only when the root
-      certificate is in the response file. The added root is logged with its
-      thumbprint. Under -WhatIf the trust check assumes the planned root is added.
+      certificate is in one of the response files. The added root is logged with
+      its thumbprint and source file. Under -WhatIf the trust check assumes the
+      planned root is added.
+    - certreq -accept is always given the certificate alone (a temporary DER
+      file), never a .p7b or full-chain file: with a chain it would also copy
+      every chain certificate, including the root, into Cert:\LocalMachine\CA.
+      The script installs the CA certificates itself (Root and CA stores).
+    - When retiring a root CA, also check Cert:\LocalMachine\CA: certreq runs
+      from older versions, or manual imports of a .p7b, may have put a copy there.
     - The chain in PFX/PEM is built from the local stores plus the certificates
       in the response file. If an intermediate is missing, the export still
       happens and a warning is shown.
@@ -316,7 +336,8 @@ function Read-CertificateFile {
     }
     else {
         $Collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $Collection.Import($File)
+        try { $Collection.Import($File) }
+        catch { throw "Not a readable certificate file (DER, Base64/PEM or PKCS#7): $($_.Exception.GetBaseException().Message)" }
         $Certs = @($Collection)
     }
     if ($Certs.Count -eq 0) { throw 'No certificates found in the file.' }
@@ -397,7 +418,7 @@ function Get-TrustHelp {
     $Top = $Trust.Top
     $Lines = @()
     if ($Trust.Partial) {
-        $Lines += "The chain stops at '$($Top.Issuer)': that CA certificate was not found on this machine or in the response file."
+        $Lines += "The chain stops at '$($Top.Issuer)': that CA certificate was not found on this machine or in the response files."
         $Lines += 'What to do:'
         $Lines += '  1. Get the missing CA certificate(s) - intermediate and root - from the CA owner.'
         $Lines += '  2. Either put the full chain in the response file (append to the .pem, or use a .p7b) and run'
@@ -408,7 +429,7 @@ function Get-TrustHelp {
     }
     elseif ($RootInFile) {
         $Lines += "The chain ends in root CA '$($Top.Subject)' (thumbprint $($Top.Thumbprint)), which is not trusted on this machine."
-        $Lines += 'The root CA certificate is included in the response file. What to do:'
+        $Lines += 'The root CA certificate is included in the response files. What to do:'
         $Lines += '  1. Confirm the thumbprint above with the CA owner (never trust an unknown root).'
         $Lines += '  2. Run again with -InstallRootCA to add it to Cert:\LocalMachine\Root.'
     }
@@ -846,6 +867,21 @@ function Read-ExportPassword {
     return Read-PasswordConsole -Target $Target -MinLength $MinLength
 }
 
+function Get-ExportTarget {
+    # Export folder and file names for a Friendly Name (thumbprint if it is empty).
+    param([string]$FriendlyName, [string]$Thumbprint, [string]$ExportPath)
+    $Name = $FriendlyName
+    if ([string]::IsNullOrWhiteSpace($Name)) { $Name = $Thumbprint }
+    $SafeName = ConvertTo-SafeFileName -Name $Name
+    $Folder = Join-Path -Path $ExportPath -ChildPath $SafeName
+    return [pscustomobject]@{
+        Name    = $Name
+        Folder  = $Folder
+        PfxFile = Join-Path -Path $Folder -ChildPath "$SafeName.pfx"
+        PemFile = Join-Path -Path $Folder -ChildPath "$SafeName.pem"
+    }
+}
+
 function Initialize-ExportRoot {
     # Creates the export root with an ACL limited to Administrators, SYSTEM and the
     # current account. An existing folder is only checked, never changed.
@@ -888,6 +924,7 @@ function Initialize-ExportRoot {
 Write-Verbose "Starting $($MyInvocation.MyCommand.Name)"
 
 $TranscriptStarted = $false
+$ExitCode = 0
 
 try {
     $ErrorActionPreference = 'Stop'
@@ -964,6 +1001,22 @@ try {
     }
     if ($Files.Count -eq 0) { Write-Log "No response files ($($ResponseExtensions -join ', ')) in $ResponsePath" 'WARN' }
 
+    # CA certificates from every response file, so a leaf-only response can use
+    # a chain that came in another file of the same batch. Unreadable files are
+    # reported in the main loop.
+    $BatchCas = [ordered]@{}
+    $CaSource = @{}
+    foreach ($File in $Files) {
+        try { $Certs = Read-CertificateFile -File $File.FullName } catch { continue }
+        foreach ($Cert in $Certs) {
+            if ((Test-IsCaCertificate $Cert) -and -not $BatchCas.Contains($Cert.Thumbprint)) {
+                $BatchCas[$Cert.Thumbprint] = $Cert
+                $CaSource[$Cert.Thumbprint] = $File.Name
+            }
+        }
+    }
+    if ($BatchCas.Count -gt 0) { Write-Log "CA certificates in the response files: $($BatchCas.Count)" }
+
     # --- Main logic ---------------------------------------------------------
     $Counts = [ordered]@{ Completed = 0; AlreadyInstalled = 0; WhatIf = 0; Failed = 0; ExportFailed = 0 }
 
@@ -1002,38 +1055,46 @@ try {
             if ($Extras.Count) { Write-Log "Chain certs in file: $($Extras.Count)" }
             if ($Leaf.NotAfter -lt (Get-Date)) { Write-Log 'The certificate has already expired.' 'WARN' }
 
-            # CA certificates from the response file, in chain order: root first
-            # (only with -InstallRootCA), then intermediates, so certreq and the
-            # exports can build the chain.
-            $FileRoots = @($Extras | Where-Object { (Test-IsCaCertificate $_) -and $_.Subject -eq $_.Issuer })
+            # Chain sources: this file plus the CA certificates of the whole batch.
+            $ChainMap = @{}
+            foreach ($Cert in @($Extras) + @($BatchCas.Values)) {
+                if ($Cert.Thumbprint -ne $Leaf.Thumbprint) { $ChainMap[$Cert.Thumbprint] = $Cert }
+            }
+            $ChainCerts = @($ChainMap.Values)
+
+            # CA certificates of this certificate's chain that came in a response
+            # file. Installed in chain order: root first (only with -InstallRootCA),
+            # then intermediates, so certreq and the exports can build the chain.
+            $Planned = Get-CertificateChain -Certificate $Leaf -ExtraCertificates $ChainCerts -IncludeRoot $true
+            $ChainCas = @($Planned.Issuers | Where-Object { $ChainMap.ContainsKey($_.Thumbprint) -and (Test-IsCaCertificate $_) })
+            $ChainRoots = @($ChainCas | Where-Object { $_.Subject -eq $_.Issuer })
             $RootPlanned = $false
-            foreach ($Root in $FileRoots) {
+            foreach ($Root in $ChainRoots) {
                 if (Get-Item -Path "Cert:\$StoreLocation\Root\$($Root.Thumbprint)" -ErrorAction SilentlyContinue) { continue }
                 if (-not $InstallRootCA) {
-                    Write-Log "Root CA '$($Root.Subject)' from the file is not trusted on this machine." 'WARN'
+                    Write-Log "Root CA '$($Root.Subject)' from $($CaSource[$Root.Thumbprint]) is not trusted on this machine." 'WARN'
                     continue
                 }
                 $RootPlanned = $true
-                $RootLabel = "{0} (thumbprint {1}, valid to {2:yyyy-MM-dd})" -f $Root.Subject, $Root.Thumbprint, $Root.NotAfter
+                $RootLabel = "{0} (thumbprint {1}, valid to {2:yyyy-MM-dd}, from {3})" -f $Root.Subject, $Root.Thumbprint, $Root.NotAfter, $CaSource[$Root.Thumbprint]
                 if ($PSCmdlet.ShouldProcess($RootLabel, "Trust root CA: add to Cert:\$StoreLocation\Root")) {
                     $Store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $StoreLocation)
                     $Store.Open('ReadWrite')
-                    $Store.Add($Root)
+                    $Store.Add($ChainMap[$Root.Thumbprint])
                     $Store.Close()
                     Write-Log "Root CA added to the trusted root store (-InstallRootCA): $RootLabel" 'WARN'
                 }
             }
 
-            foreach ($Extra in $Extras) {
-                if (-not (Test-IsCaCertificate $Extra)) { continue }
-                if ($Extra.Subject -eq $Extra.Issuer) { continue }
-                if (Get-Item -Path "Cert:\$StoreLocation\CA\$($Extra.Thumbprint)" -ErrorAction SilentlyContinue) { continue }
-                if ($PSCmdlet.ShouldProcess($Extra.Subject, "Add intermediate CA to Cert:\$StoreLocation\CA")) {
+            foreach ($Ca in @($ChainCas | Where-Object { $_.Subject -ne $_.Issuer })) {
+                if (Get-Item -Path "Cert:\$StoreLocation\CA\$($Ca.Thumbprint)" -ErrorAction SilentlyContinue) { continue }
+                $CaLabel = "$($Ca.Subject) (from $($CaSource[$Ca.Thumbprint]))"
+                if ($PSCmdlet.ShouldProcess($CaLabel, "Add intermediate CA to Cert:\$StoreLocation\CA")) {
                     $Store = New-Object System.Security.Cryptography.X509Certificates.X509Store('CA', $StoreLocation)
                     $Store.Open('ReadWrite')
-                    $Store.Add($Extra)
+                    $Store.Add($ChainMap[$Ca.Thumbprint])
                     $Store.Close()
-                    Write-Log "Added intermediate CA: $($Extra.Subject)"
+                    Write-Log "Added intermediate CA: $CaLabel"
                 }
             }
 
@@ -1046,21 +1107,34 @@ try {
 
                 # certreq -accept refuses certificates whose chain is not trusted;
                 # check first so the operator gets clear steps instead.
-                $Trust = Test-ChainTrust -Certificate $Leaf -ExtraCertificates $Extras
+                $Trust = Test-ChainTrust -Certificate $Leaf -ExtraCertificates $ChainCerts
                 if (-not $Trust.Trusted -and -not ($WhatIfPreference -and $RootPlanned)) {
-                    foreach ($Line in (Get-TrustHelp -Trust $Trust -RootInFile ($FileRoots.Count -gt 0))) { Write-Log $Line 'WARN' }
+                    foreach ($Line in (Get-TrustHelp -Trust $Trust -RootInFile ($ChainRoots.Count -gt 0))) { Write-Log $Line 'WARN' }
                     throw 'The CA chain is not trusted on this machine - see the steps above.'
                 }
 
                 if (-not $PSCmdlet.ShouldProcess($File.FullName, "Install certificate via certreq -accept $CertReqStoreFlag")) {
+                    # Under -WhatIf, also show the exports that would follow (the
+                    # certreq Friendly Name comes from the pending request).
+                    if ($WhatIfPreference -and ($ExportPfx -or $ExportPem)) {
+                        $Plan = Get-ExportTarget -FriendlyName $PendingMatch.FriendlyName -Thumbprint $Leaf.Thumbprint -ExportPath $ExportPath
+                        foreach ($PlanFile in @($(if ($ExportPfx) { $Plan.PfxFile }), $(if ($ExportPem) { $Plan.PemFile })) | Where-Object { $_ }) {
+                            if ((Test-Path -LiteralPath $PlanFile) -and -not $Force) {
+                                Write-Log "Export file already exists: $PlanFile - the export would fail without -Force." 'WARN'
+                            }
+                        }
+                        if ($ExportPfx) { [void]$PSCmdlet.ShouldProcess($Plan.PfxFile, 'Export PFX (private key + chain)') }
+                        if ($ExportPem) { [void]$PSCmdlet.ShouldProcess($Plan.PemFile, 'Export PEM (certificate + chain + encrypted key)') }
+                    }
                     $Counts.WhatIf++
                     continue
                 }
 
-                # A multi-certificate PEM is handed to certreq as the leaf only.
+                # certreq gets the leaf only: with a .p7b or full-chain file it would
+                # also copy every chain certificate (root included) into the CA store.
                 $AcceptFile = $File.FullName
                 $TempFile = $null
-                if ($FileCerts.Count -gt 1 -and $File.Extension -in '.pem', '.cer', '.crt') {
+                if ($FileCerts.Count -gt 1) {
                     $TempFile = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ("CertToolset-{0}.cer" -f $Leaf.Thumbprint)
                     [IO.File]::WriteAllBytes($TempFile, $Leaf.RawData)
                     $AcceptFile = $TempFile
@@ -1075,8 +1149,8 @@ try {
                 if ($Result.ExitCode -ne 0) {
                     $Code = '0x{0:X8}' -f $Result.ExitCode
                     if ($Code -in '0x800B010A', '0x800B0109') {
-                        $Trust = Test-ChainTrust -Certificate $Leaf -ExtraCertificates $Extras
-                        foreach ($Line in (Get-TrustHelp -Trust $Trust -RootInFile ($FileRoots.Count -gt 0))) { Write-Log $Line 'WARN' }
+                        $Trust = Test-ChainTrust -Certificate $Leaf -ExtraCertificates $ChainCerts
+                        foreach ($Line in (Get-TrustHelp -Trust $Trust -RootInFile ($ChainRoots.Count -gt 0))) { Write-Log $Line 'WARN' }
                         throw "certreq -accept failed ($Code): the CA chain is not trusted on this machine - see the steps above."
                     }
                     throw "certreq -accept failed ($Code). See the certreq lines above."
@@ -1092,15 +1166,14 @@ try {
 
             # --- Export -----------------------------------------------------
             if ($ExportPfx -or $ExportPem) {
-                $FriendlyName = $Installed.FriendlyName
-                if ([string]::IsNullOrWhiteSpace($FriendlyName)) {
-                    $FriendlyName = $Installed.Thumbprint
+                if ([string]::IsNullOrWhiteSpace($Installed.FriendlyName)) {
                     Write-Log 'No Friendly Name; using the thumbprint for file names.' 'WARN'
                 }
-                $SafeName = ConvertTo-SafeFileName -Name $FriendlyName
-                $TargetFolder = Join-Path -Path $ExportPath -ChildPath $SafeName
-                $PfxFile = Join-Path -Path $TargetFolder -ChildPath "$SafeName.pfx"
-                $PemFile = Join-Path -Path $TargetFolder -ChildPath "$SafeName.pem"
+                $ExportTarget = Get-ExportTarget -FriendlyName $Installed.FriendlyName -Thumbprint $Installed.Thumbprint -ExportPath $ExportPath
+                $FriendlyName = $ExportTarget.Name
+                $TargetFolder = $ExportTarget.Folder
+                $PfxFile = $ExportTarget.PfxFile
+                $PemFile = $ExportTarget.PemFile
 
                 try {
                     foreach ($Target in @($(if ($ExportPfx) { $PfxFile }), $(if ($ExportPem) { $PemFile })) | Where-Object { $_ }) {
@@ -1112,7 +1185,7 @@ try {
                     $DoPem = $ExportPem -and $PSCmdlet.ShouldProcess($PemFile, 'Export PEM (certificate + chain + encrypted key)')
 
                     if ($DoPfx -or $DoPem) {
-                        $Chain = Get-CertificateChain -Certificate $Installed -ExtraCertificates $Extras -IncludeRoot $PemIncludeRoot
+                        $Chain = Get-CertificateChain -Certificate $Installed -ExtraCertificates $ChainCerts -IncludeRoot $PemIncludeRoot
                         if (-not $Chain.Complete) {
                             Write-Log 'The chain is incomplete (an intermediate or root is missing); exports hold only what was found.' 'WARN'
                         }
@@ -1190,6 +1263,7 @@ try {
         $Counts.Completed, $Counts.AlreadyInstalled, $Counts.Failed, $Counts.ExportFailed,
         $(if ($Counts.WhatIf) { ", $($Counts.WhatIf) skipped (WhatIf)" } else { '' }))
     if ($Counts.Failed -gt 0) { Write-Log "Failed responses were left in $ResponsePath for a retry." 'WARN' }
+    if ($Counts.Failed -gt 0 -or $Counts.ExportFailed -gt 0) { $ExitCode = 1 }
 
     Write-Log "=== $ScriptBaseName end ==="
 }
@@ -1201,3 +1275,5 @@ finally {
     if ($TranscriptStarted) { Stop-ToolsetTranscript }
     Write-Verbose "Finished $($MyInvocation.MyCommand.Name)"
 }
+
+exit $ExitCode

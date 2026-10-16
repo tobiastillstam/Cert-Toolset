@@ -12,8 +12,10 @@
     request until Complete-CertRequest.ps1 accepts the CA response.
 
     The Common Name (CN) is used as the Subject CN and as the first Subject
-    Alternative Name (SAN). The CN can be an FQDN, a wildcard ("*.domain.tld") or an
-    IP address. Extra SANs are added with -DnsName and -IpAddress.
+    Alternative Name (SAN). The CN can be an FQDN, a short host name, a wildcard
+    ("*.domain.tld") or an IP address. Extra SANs are added with -DnsName and
+    -IpAddress. Short host names (no domain, e.g. "app01") give a warning: internal
+    CAs may accept them, public CAs reject them.
 
     Subject fields (C, S, L, O, OU), key length, hash algorithm, key provider, Key
     Usage and Extended Key Usage come from CertToolset.config.json next to the
@@ -32,11 +34,12 @@
     Supports -WhatIf and -Confirm.
 
 .PARAMETER CommonName
-    FQDN, wildcard ("*.domain.tld") or IP address for the Subject CN. Also added as
-    the first DNS or IP SAN. Required.
+    FQDN, short host name, wildcard ("*.domain.tld") or IP address for the Subject
+    CN. Also added as the first DNS or IP SAN. Required.
 
 .PARAMETER DnsName
-    Extra DNS SAN entries (FQDN or wildcard). Duplicates are removed.
+    Extra DNS SAN entries (FQDN, short host name or wildcard). Duplicates are
+    removed.
 
 .PARAMETER IpAddress
     IP SAN entries, IPv4 or IPv6. Duplicates are removed.
@@ -91,16 +94,22 @@
     .\New-CertRequest.ps1 -CommonName 'nas01.contoso.local' -IpAddress '10.0.0.20' -KeyLength 2048
     Request for an appliance that needs a 2048-bit key and an IP SAN.
 
+.EXAMPLE
+    .\New-CertRequest.ps1 -CommonName 'app01.contoso.local' -DnsName 'app01'
+    Internal-CA request with the short host name as an extra SAN (gives a warning).
+
 .NOTES
     Author        : Tobias Tillstam, Tillnet
     Webpage       : https://tillnet.se
     GitHub        : https://github.com/tobiastillstam
-    Version       : 1.0.0
+    Version       : 1.1.0
     Date Created  : 2026-08-28
     Last Modified : 2026-10-16
 
     Change Log
     ----------
+    1.1.0 (2026-10-16) - Short host names (no domain) allowed as CN and -DnsName,
+                          with a warning.
     1.0.0 (2026-10-16) - Renamed from New-Csr.ps1 and reworked for Cert-Toolset:
                           JSON config, transcript logging, IP SANs (-IpAddress, IP as
                           CN), -DnsName replaces -AdditionalDnsNames, Subject/key
@@ -299,11 +308,19 @@ function ConvertTo-SafeFileName {
     return $Safe
 }
 
+function Test-ShortHostName {
+    # Single-label host name such as "app01": no dot, at least one letter.
+    param([string]$Name)
+    return ($Name -match '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$' -and $Name -match '[a-zA-Z]')
+}
+
 function Test-HostName {
-    # FQDN or wildcard FQDN (at least one dot), max 253 characters.
+    # FQDN, wildcard FQDN (at least one dot after "*.") or short host name,
+    # max 253 characters.
     param([string]$Name)
     $Pattern = '^(\*\.)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'
-    return ($Name.Length -le 253 -and $Name -match $Pattern)
+    if ($Name.Length -gt 253) { return $false }
+    return ($Name -match $Pattern -or (Test-ShortHostName -Name $Name))
 }
 
 function ConvertTo-IpAddress {
@@ -410,14 +427,21 @@ try {
 
     $CommonNameIp = ConvertTo-IpAddress -Value $CommonName
     if (-not $CommonNameIp -and -not (Test-HostName -Name $CommonName)) {
-        throw "CommonName '$CommonName' is not a valid FQDN, wildcard (*.domain.tld) or IP address."
+        throw "CommonName '$CommonName' is not a valid FQDN, short host name, wildcard (*.domain.tld) or IP address."
     }
     if ($CommonName.Length -gt 64) {
         Write-Log "CommonName is $($CommonName.Length) characters; RFC 5280 limits CN to 64. Many CAs will reject it." 'WARN'
     }
 
     foreach ($Name in $DnsName) {
-        if (-not (Test-HostName -Name $Name)) { throw "DnsName '$Name' is not a valid FQDN or wildcard." }
+        if (-not (Test-HostName -Name $Name)) { throw "DnsName '$Name' is not a valid FQDN, short host name or wildcard." }
+    }
+
+    # Short names are allowed for internal CAs; public CAs reject them.
+    foreach ($Name in @($(if (-not $CommonNameIp) { $CommonName })) + $DnsName) {
+        if ($Name -and (Test-ShortHostName -Name $Name)) {
+            Write-Log "'$Name' is a short host name (no domain). Internal CAs may accept it; public CAs reject it." 'WARN'
+        }
     }
 
     $IpList = @()

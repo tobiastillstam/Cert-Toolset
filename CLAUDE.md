@@ -7,8 +7,13 @@ Private repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 
 - 2026-10-16: four scripts reworked from Tobias's CSR scripts and aligned to
   the house template (see CHANGELOG). Tested in user context on Windows 11
-  (PS 5.1 + 7.6, PEM verified with OpenSSL); not yet run elevated against the
-  real Local Machine store and a real CA.
+  (PS 5.1 + 7.6, PEM verified with OpenSSL).
+- 2026-10-16: elevated test round passed against the Local Machine store with a
+  lab CA (root + issuing CA): real certreq -accept, -InstallRootCA, password
+  dialog, PFX/PEM verified with OpenSSL. Fixes from it: batch-wide chain
+  collection, leaf-only certreq input, WhatIf exports, exit codes, short host
+  names. Not yet tested: actual removal by -RemoveStaleRequests; a real
+  (non-lab) CA.
 
 ## Design decisions
 
