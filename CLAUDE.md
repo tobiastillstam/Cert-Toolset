@@ -5,8 +5,24 @@ Private repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 
 ## Status
 
-- Scaffold only (created 2026-10-16). Existing code from Tobias to be
-  brought in and aligned to the house template.
+- 2026-10-16: four scripts reworked from Tobias's CSR scripts and aligned to
+  the house template (see CHANGELOG). Tested in user context on Windows 11
+  (PS 5.1 + 7.6, PEM verified with OpenSSL); not yet run elevated against the
+  real Local Machine store and a real CA.
+
+## Design decisions
+
+- Separate, self-contained scripts (no shared module/dot-sourced file). The
+  helper functions are duplicated on purpose - keep copies in sync when editing.
+- Config: `CertToolset.config.json` next to the scripts (gitignored), example
+  tracked. Parameters override config; missing keys use built-in defaults.
+- Store: Local Machine only (`$StoreLocation` in each script).
+- Export passwords: interactive only (dialog, console fallback). Never add a
+  password parameter.
+- PEM: native PowerShell, one combined file (cert + chain + encrypted PKCS#8).
+- `Test-CertRequest.ps1` has no `#Requires -RunAsAdministrator` on purpose
+  (runs on many machines as non-admin).
+- Static analysis: `Invoke-ScriptAnalyzer -Path . -Settings .\PSScriptAnalyzerSettings.psd1`.
 
 ## Coding conventions (house template)
 

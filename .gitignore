@@ -13,6 +13,16 @@ Logs/
 *.der
 *.p7b
 *.csr
+*.req
+*.inf
+
+# Working folders (requests, CA responses, exports with private keys)
+Requests/
+Responses/
+Exports/
+
+# Local config (real subject values); the example is tracked
+CertToolset.config.json
 
 # Local tests and lab data (kept local, not published)
 Tests/

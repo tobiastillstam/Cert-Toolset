@@ -1,0 +1,33 @@
+{
+    "Subject": {
+        "Country": "SE",
+        "State": "",
+        "Locality": "Stockholm",
+        "Organization": "Example Org",
+        "OrganizationalUnit": ""
+    },
+    "KeyLength": 4096,
+    "HashAlgorithm": "SHA512",
+    "KeyProvider": "Microsoft Software Key Storage Provider",
+    "KeyExportable": true,
+    "KeyUsage": [
+        "DigitalSignature",
+        "KeyEncipherment"
+    ],
+    "EnhancedKeyUsage": [
+        "1.3.6.1.5.5.7.3.1",
+        "1.3.6.1.5.5.7.3.2"
+    ],
+    "Folders": {
+        "Requests": "Requests",
+        "Responses": "Responses",
+        "Exports": "Exports",
+        "Logs": "Logs"
+    },
+    "Export": {
+        "PfxEncryption": "AES256_SHA256",
+        "PemIncludeRoot": true,
+        "PemIterations": 100000,
+        "MinPasswordLength": 12
+    }
+}
