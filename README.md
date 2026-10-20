@@ -3,7 +3,7 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
 ![Platform](https://img.shields.io/badge/Windows%20Server-certificates-0078D6)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.1.0-blue)
 
 PowerShell toolset for certificate management on Windows Server: create a CSR,
 check it, complete it with the CA response, and export the certificate as PFX
@@ -103,7 +103,10 @@ built-in defaults. Parameters override the config.
 
 ## Exports
 
-- **PFX** - private key + chain, `Export-PfxCertificate`, AES256-SHA256 by default.
+- **PFX** - private key + chain, AES256-SHA256 by default. Windows PowerShell
+  5.1 uses `Export-PfxCertificate` (TripleDES only on Server 2016 and older);
+  PowerShell 7 uses the .NET PFX writer (`Pkcs12Builder`, AES on every Windows
+  version) and reads the file back before saving it. The log names the writer.
 - **PEM** - one combined file: certificate, chain, then the private key as
   `ENCRYPTED PRIVATE KEY` (PKCS#8, PBKDF2-SHA256 + AES-256-CBC, the OpenSSL 3
   default). Same layout as `openssl pkcs12 -in x.pfx -out x.pem`. Uses the same
@@ -153,6 +156,7 @@ duplicated in each script, so keep the copies in sync when editing one.
 | `The CA chain is not trusted on this machine` | Checked before certreq runs; the log lists the steps. Root in the response file: confirm its thumbprint with the CA owner, then run again with `-InstallRootCA`. Otherwise add the root (and intermediates) to the response file, or import them into `Cert:\LocalMachine\Root` / `CA`. |
 | `The chain is incomplete` (warning) | An intermediate/root is missing locally; the export holds only what was found. |
 | `Export file already exists` | Use `-Force`, or export again with `Export-CertBundle.ps1`. |
+| `The term 'Export-PfxCertificate' is not recognized` | Toolset 1.0.0 on PowerShell 7.0, which does not load the Windows PKI module. Update to 1.1.0 (PowerShell 7 has its own PFX writer), or run the script in Windows PowerShell 5.1. |
 | `Not a readable certificate file` | The response is not DER, Base64/PEM or PKCS#7 (e.g. an HTML page or a text mail saved as `.cer`). Get the certificate file again from the CA. |
 | Retiring a root CA | Remove it from `Cert:\LocalMachine\Root` **and** check `Cert:\LocalMachine\CA`: a `.p7b` imported by hand (or with an older toolset version) can leave a copy there. |
 

@@ -69,12 +69,15 @@
     Author        : Tobias Tillstam, Tillnet
     Webpage       : https://tillnet.se
     GitHub        : https://github.com/tobiastillstam
-    Version       : 1.0.1
+    Version       : 1.1.0
     Date Created  : 2026-10-16
-    Last Modified : 2026-10-16
+    Last Modified : 2026-10-20
 
     Change Log
     ----------
+    1.1.0 (2026-10-20) - PowerShell 7 writes the PFX with .NET (Pkcs12Builder)
+                          instead of Export-PfxCertificate, which PS 7.0 cannot
+                          load; -Format Pem no longer needs the PKI module.
     1.0.1 (2026-10-16) - Exit code 1 when any export failed.
     1.0.0 (2026-10-16) - Initial release.
 
@@ -93,6 +96,10 @@
     - Export options are in the config: Export.PfxEncryption (AES256_SHA256 or
       TripleDES_SHA1 for old appliances), Export.PemIncludeRoot,
       Export.PemIterations and Export.MinPasswordLength.
+    - PFX writer: Windows PowerShell 5.1 uses Export-PfxCertificate (TripleDES
+      only on Server 2016 and older); PowerShell 7 uses .NET Pkcs12Builder (AES
+      on every Windows version) and reads the file back before writing it. The
+      log names the writer used.
     - Only RSA keys can be exported to PEM.
 #>
 
@@ -684,6 +691,102 @@ function Read-ExportPassword {
     return Read-PasswordConsole -Target $Target -MinLength $MinLength
 }
 
+function Get-PfxExportPlan {
+    # How the PFX is written. PowerShell 7: .NET Pkcs12Builder, because the PKI
+    # module is Windows PowerShell-only there (PS 7.0 does not auto-load it, later
+    # versions run it in a compatibility session with deserialized objects).
+    # Windows PowerShell 5.1: Export-PfxCertificate.
+    param([string]$Encryption)
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        try { Add-Type -AssemblyName System.Security.Cryptography.Pkcs -ErrorAction Stop }
+        catch { throw "The .NET PFX writer (System.Security.Cryptography.Pkcs) is not available in PowerShell $($PSVersionTable.PSVersion): $($_.Exception.Message)" }
+        return [pscustomobject]@{ Method = 'DotNet'; Encryption = $Encryption; CmdletParams = @{} }
+    }
+    $Command = Get-Command Export-PfxCertificate -ErrorAction SilentlyContinue
+    if (-not $Command) {
+        throw 'Export-PfxCertificate (PKI module) is not available in Windows PowerShell on this machine. Run the script in PowerShell 7 (it has its own PFX writer) or export PEM only.'
+    }
+    $CmdletParams = @{ ChainOption = 'BuildChain' }
+    $Effective = $Encryption
+    if ($Command.Parameters.ContainsKey('CryptoAlgorithmOption')) { $CmdletParams['CryptoAlgorithmOption'] = $Encryption }
+    else { $Effective = 'TripleDES_SHA1' }   # Server 2016 and older: no AES option
+    return [pscustomobject]@{ Method = 'Cmdlet'; Encryption = $Effective; CmdletParams = $CmdletParams }
+}
+
+function Export-PfxFile {
+    # Password-protected PFX with the certificate, its chain (root included) and
+    # the private key, written as planned by Get-PfxExportPlan.
+    param(
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$ExtraCertificates = @(),
+        [System.Security.SecureString]$Password,
+        [object]$Plan,
+        [string]$FilePath
+    )
+    if ($Plan.Method -eq 'Cmdlet') {
+        $CmdletParams = $Plan.CmdletParams
+        Export-PfxCertificate -Cert $Certificate -FilePath $FilePath -Password $Password @CmdletParams | Out-Null
+        return
+    }
+
+    # .NET: certificates in a password-encrypted safe, the key in a shrouded key
+    # bag, linked by localKeyId and labelled with the Friendly Name, sealed with a
+    # MAC. Same algorithms as the Windows export: PBES2 AES-256-CBC + PBKDF2-SHA256
+    # with a SHA-256 MAC, or PBE-SHA1-3DES with a SHA-1 MAC for old appliances.
+    if ($Plan.Encryption -eq 'AES256_SHA256') {
+        $Pbe = New-Object System.Security.Cryptography.PbeParameters(
+            [System.Security.Cryptography.PbeEncryptionAlgorithm]::Aes256Cbc, [System.Security.Cryptography.HashAlgorithmName]::SHA256, 2048)
+        $MacHash = [System.Security.Cryptography.HashAlgorithmName]::SHA256
+    }
+    else {
+        $Pbe = New-Object System.Security.Cryptography.PbeParameters(
+            [System.Security.Cryptography.PbeEncryptionAlgorithm]::TripleDes3KeyPkcs12, [System.Security.Cryptography.HashAlgorithmName]::SHA1, 2048)
+        $MacHash = [System.Security.Cryptography.HashAlgorithmName]::SHA1
+    }
+
+    $Key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+    if (-not $Key) { $Key = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($Certificate) }
+    if (-not $Key) { throw 'The certificate has no RSA or ECDSA private key.' }
+
+    $Chain = Get-CertificateChain -Certificate $Certificate -ExtraCertificates $ExtraCertificates -IncludeRoot $true
+    $Attributes = @([System.Security.Cryptography.Pkcs.Pkcs9LocalKeyId]::new([byte[]]$Certificate.GetCertHash()))
+    if ($Certificate.FriendlyName) {
+        $Bmp = New-DerElement -Tag 0x1E -Content @(, [Text.Encoding]::BigEndianUnicode.GetBytes($Certificate.FriendlyName))   # BMPString
+        $Attributes += New-Object System.Security.Cryptography.AsnEncodedData('1.2.840.113549.1.9.20', $Bmp)                  # friendlyName
+    }
+
+    $Plain = ConvertFrom-SecureStringPlain $Password
+    try {
+        $CertContents = New-Object System.Security.Cryptography.Pkcs.Pkcs12SafeContents
+        $LeafBag = $CertContents.AddCertificate($Certificate)
+        foreach ($Attribute in $Attributes) { [void]$LeafBag.Attributes.Add($Attribute) }
+        foreach ($Issuer in $Chain.Issuers) { [void]$CertContents.AddCertificate($Issuer) }
+
+        $KeyContents = New-Object System.Security.Cryptography.Pkcs.Pkcs12SafeContents
+        $KeyBag = $KeyContents.AddShroudedKey($Key, [string]$Plain, $Pbe)
+        foreach ($Attribute in $Attributes) { [void]$KeyBag.Attributes.Add($Attribute) }
+
+        $Builder = New-Object System.Security.Cryptography.Pkcs.Pkcs12Builder
+        $Builder.AddSafeContentsEncrypted($CertContents, [string]$Plain, $Pbe)
+        $Builder.AddSafeContentsUnencrypted($KeyContents)
+        $Builder.SealWithMac([string]$Plain, $MacHash, 2048)
+        $Bytes = $Builder.Encode()
+
+        # Read it back before writing: the password must open it and give the key.
+        $Check = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+        $Check.Import($Bytes, [string]$Plain, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+        $Leaf = @($Check | Where-Object { $_.Thumbprint -eq $Certificate.Thumbprint })
+        $Readable = ($Leaf.Count -eq 1 -and $Leaf[0].HasPrivateKey)
+        foreach ($Cert in $Check) { $Cert.Dispose() }
+        if (-not $Readable) { throw 'The PFX written by the .NET writer could not be read back with its private key.' }
+    }
+    finally {
+        $Plain = $null
+        $Key.Dispose()
+    }
+    [IO.File]::WriteAllBytes($FilePath, $Bytes)
+}
+
 function Initialize-ExportRoot {
     # Creates the export root with an ACL limited to Administrators, SYSTEM and the
     # current account. An existing folder is only checked, never changed.
@@ -821,12 +924,13 @@ try {
 
     $ExportPfx = $Format -contains 'Pfx'
     $ExportPem = $Format -contains 'Pem'
-    $PfxParams = @{ ChainOption = 'BuildChain' }
-    if ((Get-Command Export-PfxCertificate).Parameters.ContainsKey('CryptoAlgorithmOption')) {
-        $PfxParams['CryptoAlgorithmOption'] = $PfxEncryption
-    }
-    elseif ($ExportPfx -and $PfxEncryption -ne 'TripleDES_SHA1') {
-        Write-Log 'This Windows version cannot write AES PFX files; the PFX uses TripleDES-SHA1.' 'WARN'
+    $PfxPlan = $null
+    if ($ExportPfx) {
+        $PfxPlan = Get-PfxExportPlan -Encryption $PfxEncryption
+        if ($PfxPlan.Encryption -ne $PfxEncryption) {
+            Write-Log 'Export-PfxCertificate on this Windows version cannot write AES PFX files; the PFX uses TripleDES-SHA1.' 'WARN'
+        }
+        Write-Log "PFX writer: $(if ($PfxPlan.Method -eq 'DotNet') { ".NET Pkcs12Builder (PowerShell $($PSVersionTable.PSVersion))" } else { 'Export-PfxCertificate' }), $($PfxPlan.Encryption)"
     }
 
     # Selection by thumbprint and/or Friendly Name.
@@ -899,7 +1003,7 @@ try {
 
             if ($DoPfx) {
                 if (Test-Path -LiteralPath $PfxFile) { Remove-Item -LiteralPath $PfxFile -Force }
-                Export-PfxCertificate -Cert $Cert -FilePath $PfxFile -Password $Password @PfxParams | Out-Null
+                Export-PfxFile -Certificate $Cert -Password $Password -Plan $PfxPlan -FilePath $PfxFile
                 Write-Log "PFX exported: $PfxFile" 'OK'
             }
             if ($DoPem) {

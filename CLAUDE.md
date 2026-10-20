@@ -15,6 +15,9 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
   names. Not yet tested: actual removal by -RemoveStaleRequests; a real
   (non-lab) CA.
 - 2026-10-20: documentation/comment review; released publicly as v1.0.0.
+- 2026-10-20: v1.1.0 - .NET PFX writer on PowerShell 7 after
+  `Export-PfxCertificate` was not found on PS 7.0 / Server 2016. Tested here on
+  PS 5.1 + 7.6 (OpenSSL + certutil); not yet run on PS 7.0 itself.
 
 ## Design decisions
 
@@ -26,6 +29,8 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 - Export passwords: interactive only (dialog, console fallback). Never add a
   password parameter.
 - PEM: native PowerShell, one combined file (cert + chain + encrypted PKCS#8).
+- PFX: `Export-PfxCertificate` on PS 5.1, .NET `Pkcs12Builder` on PS 7 (the PKI
+  module is Windows PowerShell-only). No OpenSSL dependency.
 - `Test-CertRequest.ps1` has no `#Requires -RunAsAdministrator` on purpose
   (runs on many machines as non-admin).
 - Static analysis: `Invoke-ScriptAnalyzer -Path . -Settings .\PSScriptAnalyzerSettings.psd1`.

@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-20
+
+### Changed
+- `Export-CertBundle.ps1` 1.1.0 and `Complete-CertRequest.ps1` 1.2.0: on
+  PowerShell 7 the PFX is written with .NET (`Pkcs12Builder`) instead of
+  `Export-PfxCertificate`. Same layout and algorithms (AES256-SHA256 or
+  TripleDES-SHA1, chain included, Friendly Name kept), AES also on Server 2016,
+  and the file is read back before it is saved. The log names the PFX writer.
+
+### Fixed
+- `Export-PfxCertificate` not recognized on PowerShell 7.0 (e.g. Server 2016),
+  which does not auto-load the Windows PKI module. The PKI module is now only
+  looked up when a PFX is requested, so PEM-only exports never need it.
+
 ## [1.0.0] - 2026-10-20
 
 First public release.
@@ -53,5 +67,6 @@ First public release.
 - New: `-WhatIf` created folders; declining the INF step under `-Confirm`
   still ran certreq against a missing/stale INF.
 
-[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tobiastillstam/Cert-Toolset/releases/tag/v1.0.0
