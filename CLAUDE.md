@@ -21,6 +21,8 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
   First PS 7.0 run: the read-back via the Windows PFX loader failed, because
   Server 2016 cannot open AES PFX files. Read-back is now managed .NET
   (Pkcs12Info + C# key check); the Windows loader result is only a warning.
+  Confirmed on PS 7.0 / Server 2016 with a real (non-lab) CA certificate:
+  AES PFX + PEM exported, full chain, managed check passed, expected warning.
 
 ## Design decisions
 
