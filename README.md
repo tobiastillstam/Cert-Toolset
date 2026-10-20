@@ -105,8 +105,12 @@ built-in defaults. Parameters override the config.
 
 - **PFX** - private key + chain, AES256-SHA256 by default. Windows PowerShell
   5.1 uses `Export-PfxCertificate` (TripleDES only on Server 2016 and older);
-  PowerShell 7 uses the .NET PFX writer (`Pkcs12Builder`, AES on every Windows
-  version) and reads the file back before saving it. The log names the writer.
+  PowerShell 7 uses the .NET PFX writer (`Pkcs12Builder`) and checks the file
+  in .NET (MAC, certificate, private key) before saving it. The log names the
+  writer.
+- **Server 2016 and older cannot import AES-encrypted PFX files.** For a PFX
+  that goes to such a machine, set `Export.PfxEncryption` to `TripleDES_SHA1`.
+  When the exporting machine itself is one of them, the log warns about it.
 - **PEM** - one combined file: certificate, chain, then the private key as
   `ENCRYPTED PRIVATE KEY` (PKCS#8, PBKDF2-SHA256 + AES-256-CBC, the OpenSSL 3
   default). Same layout as `openssl pkcs12 -in x.pfx -out x.pem`. Uses the same
@@ -157,6 +161,7 @@ duplicated in each script, so keep the copies in sync when editing one.
 | `The chain is incomplete` (warning) | An intermediate/root is missing locally; the export holds only what was found. |
 | `Export file already exists` | Use `-Force`, or export again with `Export-CertBundle.ps1`. |
 | `The term 'Export-PfxCertificate' is not recognized` | Toolset 1.0.0 on PowerShell 7.0, which does not load the Windows PKI module. Update to 1.1.0 (PowerShell 7 has its own PFX writer), or run the script in Windows PowerShell 5.1. |
+| `The specified network password is not correct` (importing a PFX) | Usually not the password: Server 2016 and older cannot open AES-encrypted PFX files. Export again with `Export.PfxEncryption` = `TripleDES_SHA1`. |
 | `Not a readable certificate file` | The response is not DER, Base64/PEM or PKCS#7 (e.g. an HTML page or a text mail saved as `.cer`). Get the certificate file again from the CA. |
 | Retiring a root CA | Remove it from `Cert:\LocalMachine\Root` **and** check `Cert:\LocalMachine\CA`: a `.p7b` imported by hand (or with an older toolset version) can leave a copy there. |
 

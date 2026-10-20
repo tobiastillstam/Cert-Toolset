@@ -18,6 +18,9 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 - 2026-10-20: v1.1.0 - .NET PFX writer on PowerShell 7 after
   `Export-PfxCertificate` was not found on PS 7.0 / Server 2016. Tested here on
   PS 5.1 + 7.6 (OpenSSL + certutil); not yet run on PS 7.0 itself.
+  First PS 7.0 run: the read-back via the Windows PFX loader failed, because
+  Server 2016 cannot open AES PFX files. Read-back is now managed .NET
+  (Pkcs12Info + C# key check); the Windows loader result is only a warning.
 
 ## Design decisions
 

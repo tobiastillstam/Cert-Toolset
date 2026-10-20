@@ -12,8 +12,13 @@ All notable changes to this project are documented here. The format is based on
 - `Export-CertBundle.ps1` 1.1.0 and `Complete-CertRequest.ps1` 1.2.0: on
   PowerShell 7 the PFX is written with .NET (`Pkcs12Builder`) instead of
   `Export-PfxCertificate`. Same layout and algorithms (AES256-SHA256 or
-  TripleDES-SHA1, chain included, Friendly Name kept), AES also on Server 2016,
-  and the file is read back before it is saved. The log names the PFX writer.
+  TripleDES-SHA1, chain included, Friendly Name kept). Before it is saved, the
+  file is checked in .NET (MAC, certificates, private key against the
+  certificate), independent of the Windows PFX loader. The log names the PFX
+  writer.
+- Warning when Windows on the exporting machine cannot open AES-encrypted PFX
+  files (Server 2016 and older), with the `TripleDES_SHA1` hint. README:
+  troubleshooting entry for "The specified network password is not correct".
 
 ### Fixed
 - `Export-PfxCertificate` not recognized on PowerShell 7.0 (e.g. Server 2016),

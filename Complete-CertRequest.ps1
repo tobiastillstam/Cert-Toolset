@@ -113,7 +113,9 @@
     1.2.0 (2026-10-20) - PowerShell 7 writes the PFX with .NET (Pkcs12Builder)
                           instead of Export-PfxCertificate, which PS 7.0 cannot
                           load; runs without -ExportPfx no longer need the PKI
-                          module.
+                          module. The PFX is checked in .NET before it is
+                          written; warning when Windows here cannot open AES
+                          PFX files.
     1.1.0 (2026-10-16) - CA certificates are collected from all response files
                           first (a leaf-only response no longer fails when its chain
                           is in another file of the batch); only the CAs of the
@@ -161,9 +163,13 @@
       TripleDES_SHA1 for old appliances), Export.PemIncludeRoot,
       Export.PemIterations and Export.MinPasswordLength.
     - PFX writer: Windows PowerShell 5.1 uses Export-PfxCertificate (TripleDES
-      only on Server 2016 and older); PowerShell 7 uses .NET Pkcs12Builder (AES
-      on every Windows version) and reads the file back before writing it. The
-      log names the writer used.
+      only on Server 2016 and older); PowerShell 7 uses .NET Pkcs12Builder and
+      checks the file in .NET (MAC, certificate, private key) before writing it.
+      The log names the writer used.
+    - Server 2016 and older cannot import AES-encrypted PFX files. When the
+      exporting machine is one of them, a warning is logged; set
+      Export.PfxEncryption to TripleDES_SHA1 for PFX files meant for such
+      machines.
     - The transcript is written even under -WhatIf (for accountability).
 #>
 
@@ -912,6 +918,41 @@ function Get-PfxExportPlan {
     return [pscustomobject]@{ Method = 'Cmdlet'; Encryption = $Effective; CmdletParams = $CmdletParams }
 }
 
+function Initialize-PfxKeyCheck {
+    # Managed check of a PFX key bag (PowerShell 7 only): decrypts it without the
+    # Windows PFX loader and compares the key with the certificate's public key.
+    if ('CertToolset.PfxKeyCheck' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+namespace CertToolset {
+    public static class PfxKeyCheck {
+        public static bool KeyMatches(byte[] encryptedPkcs8, string password, X509Certificate2 certificate) {
+            int read;
+            using (RSA certRsa = certificate.GetRSAPublicKey()) {
+                if (certRsa != null) {
+                    using (RSA key = RSA.Create()) {
+                        key.ImportEncryptedPkcs8PrivateKey(password, encryptedPkcs8, out read);
+                        return CryptographicOperations.FixedTimeEquals(key.ExportParameters(false).Modulus, certRsa.ExportParameters(false).Modulus);
+                    }
+                }
+            }
+            using (ECDsa certEc = certificate.GetECDsaPublicKey()) {
+                if (certEc != null) {
+                    using (ECDsa key = ECDsa.Create()) {
+                        key.ImportEncryptedPkcs8PrivateKey(password, encryptedPkcs8, out read);
+                        ECPoint a = key.ExportParameters(false).Q, b = certEc.ExportParameters(false).Q;
+                        return CryptographicOperations.FixedTimeEquals(a.X, b.X) && CryptographicOperations.FixedTimeEquals(a.Y, b.Y);
+                    }
+                }
+            }
+            return false;
+        }
+    }
+}
+'@
+}
+
 function Export-PfxFile {
     # Password-protected PFX with the certificate, its chain (root included) and
     # the private key, written as planned by Get-PfxExportPlan.
@@ -971,19 +1012,53 @@ function Export-PfxFile {
         $Builder.SealWithMac([string]$Plain, $MacHash, 2048)
         $Bytes = $Builder.Encode()
 
-        # Read it back before writing: the password must open it and give the key.
-        $Check = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-        $Check.Import($Bytes, [string]$Plain, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
-        $Leaf = @($Check | Where-Object { $_.Thumbprint -eq $Certificate.Thumbprint })
-        $Readable = ($Leaf.Count -eq 1 -and $Leaf[0].HasPrivateKey)
-        foreach ($Cert in $Check) { $Cert.Dispose() }
-        if (-not $Readable) { throw 'The PFX written by the .NET writer could not be read back with its private key.' }
+        # Read it back before writing, in .NET only (the Windows PFX loader cannot
+        # open AES files on older Windows): MAC, certificate and private key must
+        # all open with the password.
+        Initialize-PfxKeyCheck
+        $Consumed = 0
+        $Info = [System.Security.Cryptography.Pkcs.Pkcs12Info]::Decode([System.ReadOnlyMemory[byte]]$Bytes, [ref]$Consumed, $false)
+        if (-not $Info.VerifyMac([string]$Plain)) { throw 'PFX check failed: the MAC does not verify with the password.' }
+        $CertCount = 0; $LeafFound = $false; $KeyMatches = $false
+        foreach ($Safe in $Info.AuthenticatedSafe) {
+            if ($Safe.ConfidentialityMode -eq [System.Security.Cryptography.Pkcs.Pkcs12ConfidentialityMode]::Password) { $Safe.Decrypt([string]$Plain) }
+            foreach ($Bag in $Safe.GetBags()) {
+                if ($Bag -is [System.Security.Cryptography.Pkcs.Pkcs12CertBag]) {
+                    $CertCount++
+                    $BagCert = $Bag.GetCertificate()
+                    if ($BagCert.Thumbprint -eq $Certificate.Thumbprint) { $LeafFound = $true }
+                    $BagCert.Dispose()
+                }
+                elseif ($Bag -is [System.Security.Cryptography.Pkcs.Pkcs12ShroudedKeyBag]) {
+                    $KeyMatches = [CertToolset.PfxKeyCheck]::KeyMatches($Bag.EncryptedPkcs8PrivateKey.ToArray(), [string]$Plain, $Certificate)
+                }
+            }
+        }
+        if (-not ($LeafFound -and $KeyMatches)) { throw 'PFX check failed: the certificate or its private key could not be read back with the password.' }
+
+        # Windows' own PFX loader on this machine (informational only).
+        $WindowsError = $null
+        try {
+            $Check = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+            $Check.Import($Bytes, [string]$Plain, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+            foreach ($Cert in $Check) { $Cert.Dispose() }
+        }
+        catch {
+            $WindowsError = $_.Exception.GetBaseException().Message
+        }
     }
     finally {
         $Plain = $null
         $Key.Dispose()
     }
     [IO.File]::WriteAllBytes($FilePath, $Bytes)
+    Write-Log "PFX check: MAC, $CertCount certificate(s) and the private key verified with the password."
+    if ($WindowsError -and $Plan.Encryption -eq 'AES256_SHA256') {
+        Write-Log "Windows on this machine cannot open AES-encrypted PFX files ($WindowsError), as on Server 2016 and older. The file is valid for newer Windows, OpenSSL and appliances; set Export.PfxEncryption to TripleDES_SHA1 if the PFX must be imported on a machine like this one." 'WARN'
+    }
+    elseif ($WindowsError) {
+        Write-Log "Windows on this machine could not open the PFX ($WindowsError), although the .NET check passed." 'WARN'
+    }
 }
 
 function Initialize-ExportRoot {
