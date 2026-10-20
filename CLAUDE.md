@@ -1,7 +1,7 @@
 # Cert-Toolset - project context for Claude Code
 
 PowerShell toolset for certificate management on Windows Server.
-Private repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
+Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 
 ## Status
 
@@ -14,6 +14,7 @@ Private repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
   collection, leaf-only certreq input, WhatIf exports, exit codes, short host
   names. Not yet tested: actual removal by -RemoveStaleRequests; a real
   (non-lab) CA.
+- 2026-10-20: documentation/comment review; released publicly as v1.0.0.
 
 ## Design decisions
 
@@ -31,8 +32,8 @@ Private repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 
 ## Coding conventions (house template)
 
-Template: `C:\Users\Tobias\.claude\script_templates\script_template.ps1`
-(see the global CLAUDE.md).
+The scripts follow the Tillnet PowerShell house template (the owner's global
+CLAUDE.md); the rules below are the parts that matter in this repo.
 
 - `#Requires -Version 5.1` and `#Requires -RunAsAdministrator`.
 - `[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]`.

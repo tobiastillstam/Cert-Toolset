@@ -135,11 +135,11 @@
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
-    # FQDN, wildcard or IP address for the Subject CN; also the first SAN. Required.
+    # FQDN, short host name, wildcard or IP address for the Subject CN; also the first SAN. Required.
     [Parameter(Mandatory = $false, Position = 0)]
     [string]$CommonName,
 
-    # Extra DNS SAN entries (FQDN or wildcard).
+    # Extra DNS SAN entries (FQDN, short host name or wildcard).
     [Parameter(Mandatory = $false)]
     [string[]]$DnsName = @(),
 

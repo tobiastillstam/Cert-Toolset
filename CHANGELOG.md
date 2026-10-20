@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-20
+
+First public release.
+
 ### Added
 - Repository scaffold: README, CHANGELOG, LICENSE (MIT), `.gitignore`,
   `.gitattributes`, CLAUDE.md.
@@ -39,9 +43,15 @@ All notable changes to this project are documented here. The format is based on
   `-DnsName`, with a warning.
 - README: wildcard example for `Export-CertBundle.ps1 -FriendlyName` fixed
   (`[*].contoso.com*`; the Friendly Name keeps the `*`).
+- Documentation and comment review before the public release: README lists
+  `.p7c` responses, untested areas and a Development section; parameter and
+  helper comments corrected; `.ps1`/`.psd1` checked out with CRLF.
 
 ### Fixed (compared to the original scripts)
 - Test: the "Key Usage present" check also matched "Enhanced Key Usage".
 - Complete: every response was reported as failed under `-WhatIf`.
 - New: `-WhatIf` created folders; declining the INF step under `-Confirm`
   still ran certreq against a missing/stale INF.
+
+[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/tobiastillstam/Cert-Toolset/releases/tag/v1.0.0

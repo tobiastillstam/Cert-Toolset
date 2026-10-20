@@ -1,2 +1,6 @@
-# Auto detect text files and perform LF normalization
+# Normalize text files to LF in the repository
 * text=auto
+
+# PowerShell files are checked out (and archived) with Windows line endings
+*.ps1  text eol=crlf
+*.psd1 text eol=crlf

@@ -3,7 +3,7 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
 ![Platform](https://img.shields.io/badge/Windows%20Server-certificates-0078D6)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 
 PowerShell toolset for certificate management on Windows Server: create a CSR,
 check it, complete it with the CA response, and export the certificate as PFX
@@ -32,7 +32,7 @@ Export-CertBundle.ps1    ->  re-export an installed certificate later
 |---|---|---|
 | `New-CertRequest.ps1` | Builds a certreq INF and CSR. CN can be an FQDN, short host name (warning), wildcard or IP; extra DNS and IP SANs. Key stays pending in `Cert:\LocalMachine\REQUEST`. | Yes |
 | `Test-CertRequest.ps1` | Decodes CSRs (file or folder) and checks key, hash, SANs, CN-in-SAN, Key Usage, EKU, Subject and signature. Exit code 1 on failure. | **No** |
-| `Complete-CertRequest.ps1` | Installs CA responses (`.cer` `.crt` `.pem` `.p7b`, full chain OK) with `certreq -accept`, adds missing intermediates, checks the chain is trusted (opt-in `-InstallRootCA`), optional PFX/PEM export, moves responses to `Completed\`. A leaf-only response can use the chain from another response file in the same run. Optional cleanup of stale pending requests. Exit code 1 on failure. | Yes |
+| `Complete-CertRequest.ps1` | Installs CA responses (`.cer` `.crt` `.pem` `.p7b` `.p7c`, full chain OK) with `certreq -accept`, adds missing intermediates, checks the chain is trusted (opt-in `-InstallRootCA`), optional PFX/PEM export, moves responses to `Completed\`. A leaf-only response can use the chain from another response file in the same run. Optional cleanup of stale pending requests. Exit code 1 on failure. | Yes |
 | `Export-CertBundle.ps1` | Lists or exports installed certificates (by thumbprint or Friendly Name) as PFX/PEM. Exit code 1 on failure. | Yes |
 
 Every script supports `-WhatIf`, `-Confirm` and `-Verbose`, and writes a
@@ -127,6 +127,21 @@ openssl pkey -in name.pem -out name.key
 - Tested elevated on Windows 11 (PS 5.1 and 7.6) against the Local Machine
   store with a lab CA (root + issuing CA). PFX and PEM output verified with
   OpenSSL.
+- Not yet tested: actual removal by `-RemoveStaleRequests` (only `-WhatIf`),
+  and responses from a public CA.
+
+---
+
+## Development
+
+Static analysis (PSScriptAnalyzer):
+
+```powershell
+Invoke-ScriptAnalyzer -Path . -Settings .\PSScriptAnalyzerSettings.psd1
+```
+
+The scripts are self-contained on purpose: shared helper functions are
+duplicated in each script, so keep the copies in sync when editing one.
 
 ---
 

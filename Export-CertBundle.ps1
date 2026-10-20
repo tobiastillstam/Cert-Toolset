@@ -724,7 +724,7 @@ function Initialize-ExportRoot {
 # -------------------------------------------------------------------------
 
 function Get-KeyExportStatus {
-    # 'Exportable', 'Not exportable' or 'Unknown' for a certificate's private key.
+    # 'Exportable', 'Not exportable', 'Not RSA' or 'Unknown' for a certificate's private key.
     param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
     try {
         $Rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
