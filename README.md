@@ -170,9 +170,10 @@ openssl pkey -in name.pem -out name.key
 - Tested elevated on Windows 11 (PS 5.1 and 7.6) against the Local Machine
   store with a lab CA (root + issuing CA). PFX and PEM output verified with
   OpenSSL. JKS output verified with Java 8 `keytool` (integrity, key recovery,
-  conversion to PKCS12) on PS 5.1, 7.0 and 7.6.
+  conversion to PKCS12) on PS 5.1, 7.0 and 7.6, and loaded by Apache Tomcat
+  7.0.103 on Java 8u161 in production.
 - Not yet tested: actual removal by `-RemoveStaleRequests` (only `-WhatIf`),
-  responses from a public CA, and a JKS loaded by Tomcat itself.
+  and responses from a public CA.
 
 ---
 

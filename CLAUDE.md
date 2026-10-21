@@ -32,6 +32,8 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
   PS 7.0 parses `0xFEEDFEEDL` as negative. Fixed (no large hex literals);
   reproduced and verified with a portable PS 7.0.13 + keytool. Rule: never use
   hex literals >= 0x80000000 in these scripts - PS versions disagree on them.
+  Confirmed in production: JKS from 1.2.1 loaded by Tomcat 7.0.103 / Java
+  8u161. Remaining untested: elevated Complete-CertRequest -ExportJks run.
 
 ## Design decisions
 

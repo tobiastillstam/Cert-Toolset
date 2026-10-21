@@ -15,7 +15,8 @@ All notable changes to this project are documented here. The format is based on
   as a negative number, so the read-back check rejected a valid keystore; no
   file was written. The magic is now written as bytes and checked as a decimal
   value, and the error shows the header values it found. Verified with Java 8
-  `keytool` on PowerShell 5.1, 7.0.13 and 7.6.
+  `keytool` on PowerShell 5.1, 7.0.13 and 7.6, and the exported JKS confirmed
+  working in Apache Tomcat 7.0.103 on Java 8u161.
 
 ## [1.2.0] - 2026-10-21
 
