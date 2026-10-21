@@ -3,13 +3,13 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
 ![Platform](https://img.shields.io/badge/Windows%20Server-certificates-0078D6)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
 
 PowerShell toolset for certificate management on Windows Server: create a CSR,
-check it, complete it with the CA response, and export the certificate as PFX
-and/or PEM for this or other machines and appliances.
+check it, complete it with the CA response, and export the certificate as PFX,
+PEM and/or Java KeyStore (JKS) for this or other machines and appliances.
 
-Built on Windows tools only (certreq, CertEnroll, .NET). No OpenSSL needed.
+Built on Windows tools only (certreq, CertEnroll, .NET). No OpenSSL or Java needed.
 
 ---
 
@@ -20,7 +20,7 @@ New-CertRequest.ps1      ->  Requests\<name>.csr          send to the CA
 Test-CertRequest.ps1     ->  PASS/FAIL against the policy (optional)
    ... CA signs ...      ->  drop the reply in Responses\
 Complete-CertRequest.ps1 ->  installed in LocalMachine\My
-                             Exports\<name>\<name>.pfx / .pem  (opt-in)
+                             Exports\<CN>\<name>.pfx / .pem / .jks  (opt-in)
 Export-CertBundle.ps1    ->  re-export an installed certificate later
 ```
 
@@ -32,8 +32,8 @@ Export-CertBundle.ps1    ->  re-export an installed certificate later
 |---|---|---|
 | `New-CertRequest.ps1` | Builds a certreq INF and CSR. CN can be an FQDN, short host name (warning), wildcard or IP; extra DNS and IP SANs. Key stays pending in `Cert:\LocalMachine\REQUEST`. | Yes |
 | `Test-CertRequest.ps1` | Decodes CSRs (file or folder) and checks key, hash, SANs, CN-in-SAN, Key Usage, EKU, Subject and signature. Exit code 1 on failure. | **No** |
-| `Complete-CertRequest.ps1` | Installs CA responses (`.cer` `.crt` `.pem` `.p7b` `.p7c`, full chain OK) with `certreq -accept`, adds missing intermediates, checks the chain is trusted (opt-in `-InstallRootCA`), optional PFX/PEM export, moves responses to `Completed\`. A leaf-only response can use the chain from another response file in the same run. Optional cleanup of stale pending requests. Exit code 1 on failure. | Yes |
-| `Export-CertBundle.ps1` | Lists or exports installed certificates (by thumbprint or Friendly Name) as PFX/PEM. Exit code 1 on failure. | Yes |
+| `Complete-CertRequest.ps1` | Installs CA responses (`.cer` `.crt` `.pem` `.p7b` `.p7c`, full chain OK) with `certreq -accept`, adds missing intermediates, checks the chain is trusted (opt-in `-InstallRootCA`), optional PFX/PEM/JKS export, moves responses to `Completed\`. A leaf-only response can use the chain from another response file in the same run. Optional cleanup of stale pending requests. Exit code 1 on failure. | Yes |
+| `Export-CertBundle.ps1` | Lists or exports installed certificates (by thumbprint or Friendly Name) as PFX/PEM (default) and/or JKS. Exit code 1 on failure. | Yes |
 
 Every script supports `-WhatIf`, `-Confirm` and `-Verbose`, and writes a
 transcript to `Logs\`. Run `Get-Help .\<script>.ps1 -Full` for all parameters.
@@ -60,6 +60,9 @@ notepad .\CertToolset.config.json
 # names use 'wildcard.'), so match the literal '*' with [*].
 .\Export-CertBundle.ps1 -List
 .\Export-CertBundle.ps1 -FriendlyName '[*].contoso.com*' -Format Pem
+
+# Java KeyStore for Tomcat / Java 8 (opt-in, not part of the default formats)
+.\Export-CertBundle.ps1 -FriendlyName 'app01.contoso.local_202610' -Format Jks
 ```
 
 ---
@@ -72,9 +75,22 @@ All folders are next to the scripts by default (configurable).
 Requests\                 INF + CSR files
 Responses\                CA replies to process
 Responses\Completed\      processed replies
-Exports\<FriendlyName>\   .pfx and .pem   (ACL: Administrators, SYSTEM, current user)
+Exports\<CN>\             .pfx .pem .jks  (ACL: Administrators, SYSTEM, current user)
 Logs\                     one transcript per run
 ```
+
+The export folder is the certificate's CN, without the `_yyyyMM` date of the
+Friendly Name; the files inside keep the full Friendly Name. Renewals therefore
+land next to the previous certificate:
+
+```text
+Exports\app01.contoso.local\app01.contoso.local_202610.pfx
+Exports\app01.contoso.local\app01.contoso.local_202710.pfx
+Exports\wildcard.contoso.com\wildcard.contoso.com_202610.jks
+```
+
+A certificate without a CN gets a folder named after its Friendly Name.
+Exports made with toolset 1.1.0 and older stay in `Exports\<FriendlyName>\`.
 
 ---
 
@@ -115,9 +131,29 @@ built-in defaults. Parameters override the config.
   `ENCRYPTED PRIVATE KEY` (PKCS#8, PBKDF2-SHA256 + AES-256-CBC, the OpenSSL 3
   default). Same layout as `openssl pkcs12 -in x.pfx -out x.pem`. Uses the same
   password as the PFX.
+- **JKS** (opt-in: `-ExportJks` / `-Format Jks`) - Java KeyStore with the
+  private key and full chain (root included) under the alias `<FriendlyName>`
+  in lower case (Java stores aliases that way). Keystore and key use the same
+  password, as Tomcat expects. Written natively (no Java on the exporting
+  machine) and read back before it is saved. This is the classic JKS format
+  that Java 8 and Tomcat 7 load by default. Its key protection is the format's
+  own SHA-1 scheme, weaker than PFX/PEM, so guard the file like the key itself.
+  `keytool` shows a "migrate to PKCS12" note; ignore it for Java 8 targets.
+- **Java 8 before 8u301 cannot read AES-encrypted PFX/PKCS12 files.** Use the
+  JKS there (or a PFX with `Export.PfxEncryption` = `TripleDES_SHA1`).
 - The password is asked for in a dialog box (masked console prompt in remote
   sessions or without a desktop). It is never a parameter, so it does not end up
   in transcripts, history or process lists.
+
+Tomcat 7 connector with the JKS (`conf\server.xml`):
+
+```xml
+<Connector port="8443" protocol="org.apache.coyote.http11.Http11NioProtocol"
+           SSLEnabled="true" scheme="https" secure="true"
+           keystoreFile="conf/app01.contoso.local_202610.jks" keystoreType="JKS"
+           keystorePass="..." keyAlias="app01.contoso.local_202610"
+           clientAuth="false" sslProtocol="TLS" />
+```
 
 Unencrypted key for an appliance that needs it (on any machine with OpenSSL):
 
@@ -133,9 +169,10 @@ openssl pkey -in name.pem -out name.key
 - An **elevated** session, except `Test-CertRequest.ps1`.
 - Tested elevated on Windows 11 (PS 5.1 and 7.6) against the Local Machine
   store with a lab CA (root + issuing CA). PFX and PEM output verified with
-  OpenSSL.
+  OpenSSL. JKS output verified with Java 8 `keytool` (integrity, key recovery,
+  conversion to PKCS12) on PS 5.1 and 7.6.
 - Not yet tested: actual removal by `-RemoveStaleRequests` (only `-WhatIf`),
-  and responses from a public CA.
+  responses from a public CA, and a JKS loaded by Tomcat itself.
 
 ---
 
@@ -162,6 +199,8 @@ duplicated in each script, so keep the copies in sync when editing one.
 | `Export file already exists` | Use `-Force`, or export again with `Export-CertBundle.ps1`. |
 | `The term 'Export-PfxCertificate' is not recognized` | Toolset 1.0.0 on PowerShell 7.0, which does not load the Windows PKI module. Update to 1.1.0 (PowerShell 7 has its own PFX writer), or run the script in Windows PowerShell 5.1. |
 | `The specified network password is not correct` (importing a PFX) | Usually not the password: Server 2016 and older cannot open AES-encrypted PFX files. Export again with `Export.PfxEncryption` = `TripleDES_SHA1`. |
+| `Invalid keystore format` or `DerInputStream.getLength()` (Java) | Java 8 before 8u301 reading an AES PFX/PKCS12. Export a JKS (`-Format Jks`), or a PFX with `TripleDES_SHA1`. |
+| `Cannot recover key` / `Keystore was tampered with, or password was incorrect` (Java) | Wrong `keystorePass`, or `keyAlias` does not match (it is the Friendly Name in lower case). |
 | `Not a readable certificate file` | The response is not DER, Base64/PEM or PKCS#7 (e.g. an HTML page or a text mail saved as `.cer`). Get the certificate file again from the CA. |
 | Retiring a root CA | Remove it from `Cert:\LocalMachine\Root` **and** check `Cert:\LocalMachine\CA`: a `.p7b` imported by hand (or with an older toolset version) can leave a copy there. |
 

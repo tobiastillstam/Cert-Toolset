@@ -4,7 +4,7 @@
 <#
 .SYNOPSIS
     Completes pending certificate requests with the CA responses and optionally
-    exports each certificate as PFX and/or PEM.
+    exports each certificate as PFX, PEM and/or Java KeyStore (JKS).
 
 .DESCRIPTION
     First, the CA certificates of all response files are collected, so a response
@@ -23,11 +23,15 @@
       4. Installs it with "certreq -accept -machine", which binds it to the pending
          private key and carries over the Friendly Name, and confirms the
          certificate is in Cert:\LocalMachine\My with a private key.
-      5. With -ExportPfx / -ExportPem: asks for a password (dialog box, console
-         fallback) and writes Exports\<FriendlyName>\<FriendlyName>.pfx and/or .pem.
+      5. With -ExportPfx / -ExportPem / -ExportJks: asks for a password (dialog
+         box, console fallback) and writes Exports\<CN>\<FriendlyName>.pfx, .pem
+         and/or .jks. The folder is the certificate's CN without the date, so
+         renewals land next to the previous files.
          The .pem holds the certificate, the chain and the private key encrypted
          with the same password (PKCS#8, PBKDF2-SHA256 + AES-256-CBC), the same
          layout as "openssl pkcs12 -in x.pfx -out x.pem".
+         The .jks holds the private key and full chain under the alias
+         <FriendlyName> (lower case); keystore and key use the same password.
       6. Moves the response file to Responses\Completed.
 
     A response that is already installed (same thumbprint with a private key in
@@ -62,6 +66,10 @@
     Export each completed certificate as a combined .pem (certificate, chain and
     encrypted private key).
 
+.PARAMETER ExportJks
+    Export each completed certificate as a Java KeyStore (.jks, private key and
+    full chain), e.g. for Tomcat on Java 8. Not exported by default.
+
 .PARAMETER InstallRootCA
     Trust a root CA certificate that is included in the response file by adding
     it to Cert:\LocalMachine\Root. Confirm its thumbprint with the CA owner first.
@@ -93,6 +101,10 @@
     Installs all responses and exports each certificate as PFX and PEM.
 
 .EXAMPLE
+    .\Complete-CertRequest.ps1 -ExportJks
+    Installs all responses and exports each certificate as a JKS keystore.
+
+.EXAMPLE
     .\Complete-CertRequest.ps1 -InstallRootCA -WhatIf
     Shows which root CA from the response files would be trusted.
 
@@ -104,12 +116,16 @@
     Author        : Tobias Tillstam, Tillnet
     Webpage       : https://tillnet.se
     GitHub        : https://github.com/tobiastillstam
-    Version       : 1.2.0
+    Version       : 1.3.0
     Date Created  : 2026-09-04
-    Last Modified : 2026-10-20
+    Last Modified : 2026-10-21
 
     Change Log
     ----------
+    1.3.0 (2026-10-21) - Export folder is the certificate's CN (no _yyyyMM), so
+                          renewals share it; file names keep the Friendly Name.
+                          New opt-in -ExportJks: native JKS keystore, read back
+                          before it is written.
     1.2.0 (2026-10-20) - PowerShell 7 writes the PFX with .NET (Pkcs12Builder)
                           instead of Export-PfxCertificate, which PS 7.0 cannot
                           load; runs without -ExportPfx no longer need the PKI
@@ -170,6 +186,13 @@
       exporting machine is one of them, a warning is logged; set
       Export.PfxEncryption to TripleDES_SHA1 for PFX files meant for such
       machines.
+    - JKS: written natively (no Java needed) in the classic JKS format, which
+      Java 8 and Tomcat 7 read as keystoreType JKS. Java 8 before 8u301 cannot
+      read AES-encrypted PFX files; use the JKS (or a TripleDES_SHA1 PFX) there.
+      The JKS key protection is the format's own SHA-1 scheme and weaker than
+      the PFX/PEM encryption; keytool shows a "migrate to PKCS12" note.
+    - Exports from toolset 1.1.0 and older are in Exports\<FriendlyName>\; they
+      are not moved.
     - The transcript is written even under -WhatIf (for accountability).
 #>
 
@@ -190,6 +213,10 @@ param(
     # Export each completed certificate as combined PEM (encrypted key).
     [Parameter(Mandatory = $false)]
     [switch]$ExportPem,
+
+    # Export each completed certificate as Java KeyStore (JKS).
+    [Parameter(Mandatory = $false)]
+    [switch]$ExportJks,
 
     # Trust a root CA included in the response file (adds it to LocalMachine\Root).
     [Parameter(Mandatory = $false)]
@@ -755,6 +782,167 @@ function ConvertTo-Pem {
     return "-----BEGIN $Label-----`n" + ($Lines -join "`n") + "`n-----END $Label-----`n"
 }
 
+function ConvertTo-BigEndian {
+    # Unsigned big-endian integer of Size bytes (JKS fields).
+    param([long]$Value, [int]$Size)
+    $Bytes = New-Object byte[] $Size
+    for ($i = $Size - 1; $i -ge 0; $i--) { $Bytes[$i] = [byte]($Value -band 0xFF); $Value = $Value -shr 8 }
+    return , $Bytes
+}
+
+function ConvertFrom-BigEndian {
+    # Unsigned big-endian integer of Size bytes at Offset (JKS fields).
+    param([byte[]]$Data, [int]$Offset, [int]$Size)
+    $Value = [long]0
+    for ($i = 0; $i -lt $Size; $i++) { $Value = ($Value -shl 8) -bor $Data[$Offset + $i] }
+    return $Value
+}
+
+function Get-JksKeyStream {
+    # Sun JKS KeyProtector keystream: SHA-1 chained over password + salt/digest.
+    param([byte[]]$PasswordBytes, [byte[]]$Salt, [int]$Length)
+    $Sha1 = [System.Security.Cryptography.SHA1]::Create()
+    $Stream = New-Object byte[] $Length
+    $Digest = $Salt
+    for ($Pos = 0; $Pos -lt $Length; $Pos += 20) {
+        $Digest = $Sha1.ComputeHash([byte[]]($PasswordBytes + $Digest))
+        [Array]::Copy($Digest, 0, $Stream, $Pos, [Math]::Min(20, $Length - $Pos))
+    }
+    $Sha1.Dispose()
+    return , $Stream
+}
+
+function Get-JksDigest {
+    # JKS integrity digest: SHA-1 over password + "Mighty Aphrodite" + keystore body.
+    param([byte[]]$PasswordBytes, [byte[]]$Data, [int]$Length)
+    $Magic = [Text.Encoding]::UTF8.GetBytes('Mighty Aphrodite')
+    $Sha1 = [System.Security.Cryptography.SHA1]::Create()
+    [void]$Sha1.TransformBlock($PasswordBytes, 0, $PasswordBytes.Length, $null, 0)
+    [void]$Sha1.TransformBlock($Magic, 0, $Magic.Length, $null, 0)
+    [void]$Sha1.TransformFinalBlock($Data, 0, $Length)
+    $Hash = $Sha1.Hash
+    $Sha1.Dispose()
+    return , $Hash
+}
+
+function New-JksKeystore {
+    # JKS keystore (version 2) with one private key entry. The key is protected
+    # with the Sun KeyProtector (OID 1.3.6.1.4.1.42.2.17.1.1): PKCS#8 XORed with
+    # a SHA-1 keystream, then a SHA-1 check value. This is the JKS format's own
+    # (weak) scheme; it is what Java 8 / Tomcat 7 read as keystoreType JKS.
+    param(
+        [string]$Alias,
+        [byte[]]$Pkcs8,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$Chain,
+        [byte[]]$PasswordBytes
+    )
+    $Random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $Salt = New-Object byte[] 20; $Random.GetBytes($Salt)
+    $Random.Dispose()
+
+    $Stream = Get-JksKeyStream -PasswordBytes $PasswordBytes -Salt $Salt -Length $Pkcs8.Length
+    $Protected = New-Object byte[] (20 + $Pkcs8.Length + 20)
+    [Array]::Copy($Salt, 0, $Protected, 0, 20)
+    for ($i = 0; $i -lt $Pkcs8.Length; $i++) { $Protected[20 + $i] = $Pkcs8[$i] -bxor $Stream[$i] }
+    [Array]::Clear($Stream, 0, $Stream.Length)
+    $Sha1 = [System.Security.Cryptography.SHA1]::Create()
+    $Check = $Sha1.ComputeHash([byte[]]($PasswordBytes + $Pkcs8))
+    $Sha1.Dispose()
+    [Array]::Copy($Check, 0, $Protected, 20 + $Pkcs8.Length, 20)
+    $AlgId = New-DerElement -Tag 0x30 -Content @((New-DerOid '1.3.6.1.4.1.42.2.17.1.1'), [byte[]](0x05, 0x00))
+    $KeyInfo = New-DerElement -Tag 0x30 -Content @($AlgId, (New-DerElement -Tag 0x04 -Content @(, $Protected)))
+
+    # Java readUTF/writeUTF strings: 2-byte length + UTF-8 (ASCII here).
+    $AliasBytes = [Text.Encoding]::UTF8.GetBytes($Alias)
+    $TypeBytes = [Text.Encoding]::ASCII.GetBytes('X.509')
+    $Epoch = New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
+    $Now = [long]([DateTime]::UtcNow - $Epoch).TotalMilliseconds
+
+    $Out = New-Object 'System.Collections.Generic.List[byte]'
+    $Out.AddRange((ConvertTo-BigEndian -Value 0xFEEDFEEDL -Size 4))   # magic
+    $Out.AddRange((ConvertTo-BigEndian -Value 2 -Size 4))            # version
+    $Out.AddRange((ConvertTo-BigEndian -Value 1 -Size 4))            # entry count
+    $Out.AddRange((ConvertTo-BigEndian -Value 1 -Size 4))            # tag: private key entry
+    $Out.AddRange((ConvertTo-BigEndian -Value $AliasBytes.Length -Size 2)); $Out.AddRange($AliasBytes)
+    $Out.AddRange((ConvertTo-BigEndian -Value $Now -Size 8))
+    $Out.AddRange((ConvertTo-BigEndian -Value $KeyInfo.Length -Size 4)); $Out.AddRange($KeyInfo)
+    $Out.AddRange((ConvertTo-BigEndian -Value $Chain.Count -Size 4))
+    foreach ($Cert in $Chain) {
+        $Out.AddRange((ConvertTo-BigEndian -Value $TypeBytes.Length -Size 2)); $Out.AddRange($TypeBytes)
+        $Out.AddRange((ConvertTo-BigEndian -Value $Cert.RawData.Length -Size 4)); $Out.AddRange($Cert.RawData)
+    }
+    $Body = $Out.ToArray()
+    $Out.AddRange((Get-JksDigest -PasswordBytes $PasswordBytes -Data $Body -Length $Body.Length))
+    return , $Out.ToArray()
+}
+
+function Test-JksKeystore {
+    # Reads a JKS keystore back: structure, integrity digest, chain count, and
+    # the private key unprotected with the password and compared with the
+    # original PKCS#8. Throws on any mismatch.
+    param([byte[]]$Data, [byte[]]$PasswordBytes, [byte[]]$Pkcs8, [int]$ChainCount)
+    $Body = $Data.Length - 20
+    $Digest = Get-JksDigest -PasswordBytes $PasswordBytes -Data $Data -Length $Body
+    for ($i = 0; $i -lt 20; $i++) {
+        if ($Digest[$i] -ne $Data[$Body + $i]) { throw 'JKS check failed: the integrity digest does not verify with the password.' }
+    }
+    if ((ConvertFrom-BigEndian -Data $Data -Offset 0 -Size 4) -ne 0xFEEDFEEDL -or (ConvertFrom-BigEndian -Data $Data -Offset 4 -Size 4) -ne 2 -or
+        (ConvertFrom-BigEndian -Data $Data -Offset 8 -Size 4) -ne 1 -or (ConvertFrom-BigEndian -Data $Data -Offset 12 -Size 4) -ne 1) {
+        throw 'JKS check failed: unexpected header or entry type.'
+    }
+    $Pos = 16
+    $Pos += 2 + (ConvertFrom-BigEndian -Data $Data -Offset $Pos -Size 2) + 8            # alias, date
+    $KeyLength = [int](ConvertFrom-BigEndian -Data $Data -Offset $Pos -Size 4); $Pos += 4
+    $KeyInfo = New-Object byte[] $KeyLength
+    [Array]::Copy($Data, $Pos, $KeyInfo, 0, $KeyLength); $Pos += $KeyLength
+    $Count = [int](ConvertFrom-BigEndian -Data $Data -Offset $Pos -Size 4); $Pos += 4
+    for ($c = 0; $c -lt $Count; $c++) {
+        $Pos += 2 + (ConvertFrom-BigEndian -Data $Data -Offset $Pos -Size 2)
+        $Pos += 4 + (ConvertFrom-BigEndian -Data $Data -Offset $Pos -Size 4)
+    }
+    if ($Count -ne $ChainCount -or $Pos -ne $Body) { throw 'JKS check failed: certificate chain or length mismatch.' }
+
+    $Outer = Read-DerElement -Data $KeyInfo -Offset 0
+    $AlgId = Read-DerElement -Data $KeyInfo -Offset $Outer.ValueOffset
+    $Protected = Get-DerValue -Data $KeyInfo -Element (Read-DerElement -Data $KeyInfo -Offset $AlgId.Next)
+    $PlainLength = $Protected.Length - 40
+    $Salt = New-Object byte[] 20
+    [Array]::Copy($Protected, 0, $Salt, 0, 20)
+    $Stream = Get-JksKeyStream -PasswordBytes $PasswordBytes -Salt $Salt -Length $PlainLength
+    $Same = ($PlainLength -eq $Pkcs8.Length)
+    for ($i = 0; $Same -and $i -lt $PlainLength; $i++) {
+        if (($Protected[20 + $i] -bxor $Stream[$i]) -ne $Pkcs8[$i]) { $Same = $false }
+    }
+    [Array]::Clear($Stream, 0, $Stream.Length)
+    if (-not $Same) { throw 'JKS check failed: the private key could not be read back with the password.' }
+}
+
+function Export-JksFile {
+    # Java KeyStore (JKS) with the private key and its chain under one alias.
+    # Keystore and key share the password (Tomcat expects them to be equal).
+    param(
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$Issuers = @(),
+        [string]$Alias,
+        [System.Security.SecureString]$Password,
+        [string]$FilePath
+    )
+    $Chain = @($Certificate) + @($Issuers)
+    # Java hashes passwords as char[] in big-endian UTF-16.
+    $PasswordBytes = [Text.Encoding]::BigEndianUnicode.GetBytes((ConvertFrom-SecureStringPlain $Password))
+    $Pkcs8 = Get-Pkcs8PrivateKey -Certificate $Certificate
+    try {
+        $Bytes = New-JksKeystore -Alias $Alias -Pkcs8 $Pkcs8 -Chain $Chain -PasswordBytes $PasswordBytes
+        Test-JksKeystore -Data $Bytes -PasswordBytes $PasswordBytes -Pkcs8 $Pkcs8 -ChainCount $Chain.Count
+    }
+    finally {
+        [Array]::Clear($Pkcs8, 0, $Pkcs8.Length)
+        [Array]::Clear($PasswordBytes, 0, $PasswordBytes.Length)
+    }
+    Write-Log 'JKS check: integrity digest, chain and private key verified with the password.'
+    [IO.File]::WriteAllBytes($FilePath, $Bytes)
+}
+
 function ConvertFrom-SecureStringPlain {
     # Plain text of a SecureString (needed for the PEM key encryption).
     param([System.Security.SecureString]$SecureString)
@@ -797,7 +985,7 @@ function Read-PasswordDialog {
     $Form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
     $Info = New-Object System.Windows.Forms.Label
-    $Info.Text = "Password for the exported PFX/PEM of:`r`n$Target"
+    $Info.Text = "Password for the exported PFX/PEM/JKS of:`r`n$Target"
     $Info.Location = New-Object System.Drawing.Point(12, 10)
     $Info.Size = New-Object System.Drawing.Size(396, 36)
     $Info.AutoEllipsis = $true
@@ -882,17 +1070,30 @@ function Read-ExportPassword {
 }
 
 function Get-ExportTarget {
-    # Export folder and file names for a Friendly Name (thumbprint if it is empty).
-    param([string]$FriendlyName, [string]$Thumbprint, [string]$ExportPath)
+    # Export folder and file names. The folder is the certificate's CN (no
+    # date), so renewals share it; the files keep the Friendly Name (thumbprint
+    # if it is empty). Without a CN, the folder uses the file name.
+    param(
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [string]$FriendlyName,
+        [string]$ExportPath
+    )
     $Name = $FriendlyName
-    if ([string]::IsNullOrWhiteSpace($Name)) { $Name = $Thumbprint }
+    if ([string]::IsNullOrWhiteSpace($Name)) { $Name = $Certificate.Thumbprint }
     $SafeName = ConvertTo-SafeFileName -Name $Name
-    $Folder = Join-Path -Path $ExportPath -ChildPath $SafeName
+    $FolderName = $SafeName
+    if ($Certificate.Subject -match '(^|,\s*)CN=') {
+        $CommonName = $Certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+        if (-not [string]::IsNullOrWhiteSpace($CommonName)) { $FolderName = ConvertTo-SafeFileName -Name $CommonName }
+    }
+    $Folder = Join-Path -Path $ExportPath -ChildPath $FolderName
     return [pscustomobject]@{
         Name    = $Name
+        Alias   = $Name.ToLowerInvariant()   # Java stores JKS aliases in lower case
         Folder  = $Folder
         PfxFile = Join-Path -Path $Folder -ChildPath "$SafeName.pfx"
         PemFile = Join-Path -Path $Folder -ChildPath "$SafeName.pem"
+        JksFile = Join-Path -Path $Folder -ChildPath "$SafeName.jks"
     }
 }
 
@@ -1169,7 +1370,7 @@ try {
     }
 
     Write-Log "Responses : $ResponsePath"
-    Write-Log "Exports   : $ExportPath (PFX: $([bool]$ExportPfx), PEM: $([bool]$ExportPem))"
+    Write-Log "Exports   : $ExportPath (PFX: $([bool]$ExportPfx), PEM: $([bool]$ExportPem), JKS: $([bool]$ExportJks))"
 
     $Files = @()
     if (Test-Path -LiteralPath $ResponsePath -PathType Container) {
@@ -1296,15 +1497,16 @@ try {
                 if (-not $PSCmdlet.ShouldProcess($File.FullName, "Install certificate via certreq -accept $CertReqStoreFlag")) {
                     # Under -WhatIf, also show the exports that would follow (the
                     # certreq Friendly Name comes from the pending request).
-                    if ($WhatIfPreference -and ($ExportPfx -or $ExportPem)) {
-                        $Plan = Get-ExportTarget -FriendlyName $PendingMatch.FriendlyName -Thumbprint $Leaf.Thumbprint -ExportPath $ExportPath
-                        foreach ($PlanFile in @($(if ($ExportPfx) { $Plan.PfxFile }), $(if ($ExportPem) { $Plan.PemFile })) | Where-Object { $_ }) {
+                    if ($WhatIfPreference -and ($ExportPfx -or $ExportPem -or $ExportJks)) {
+                        $Plan = Get-ExportTarget -Certificate $Leaf -FriendlyName $PendingMatch.FriendlyName -ExportPath $ExportPath
+                        foreach ($PlanFile in @($(if ($ExportPfx) { $Plan.PfxFile }), $(if ($ExportPem) { $Plan.PemFile }), $(if ($ExportJks) { $Plan.JksFile })) | Where-Object { $_ }) {
                             if ((Test-Path -LiteralPath $PlanFile) -and -not $Force) {
                                 Write-Log "Export file already exists: $PlanFile - the export would fail without -Force." 'WARN'
                             }
                         }
                         if ($ExportPfx) { [void]$PSCmdlet.ShouldProcess($Plan.PfxFile, 'Export PFX (private key + chain)') }
                         if ($ExportPem) { [void]$PSCmdlet.ShouldProcess($Plan.PemFile, 'Export PEM (certificate + chain + encrypted key)') }
+                        if ($ExportJks) { [void]$PSCmdlet.ShouldProcess($Plan.JksFile, "Export JKS (private key + chain, alias '$($Plan.Alias)')") }
                     }
                     $Counts.WhatIf++
                     continue
@@ -1345,26 +1547,28 @@ try {
             }
 
             # --- Export -----------------------------------------------------
-            if ($ExportPfx -or $ExportPem) {
+            if ($ExportPfx -or $ExportPem -or $ExportJks) {
                 if ([string]::IsNullOrWhiteSpace($Installed.FriendlyName)) {
                     Write-Log 'No Friendly Name; using the thumbprint for file names.' 'WARN'
                 }
-                $ExportTarget = Get-ExportTarget -FriendlyName $Installed.FriendlyName -Thumbprint $Installed.Thumbprint -ExportPath $ExportPath
+                $ExportTarget = Get-ExportTarget -Certificate $Installed -FriendlyName $Installed.FriendlyName -ExportPath $ExportPath
                 $FriendlyName = $ExportTarget.Name
                 $TargetFolder = $ExportTarget.Folder
                 $PfxFile = $ExportTarget.PfxFile
                 $PemFile = $ExportTarget.PemFile
+                $JksFile = $ExportTarget.JksFile
 
                 try {
-                    foreach ($Target in @($(if ($ExportPfx) { $PfxFile }), $(if ($ExportPem) { $PemFile })) | Where-Object { $_ }) {
+                    foreach ($Target in @($(if ($ExportPfx) { $PfxFile }), $(if ($ExportPem) { $PemFile }), $(if ($ExportJks) { $JksFile })) | Where-Object { $_ }) {
                         if ((Test-Path -LiteralPath $Target) -and -not $Force) {
                             throw "Export file already exists: $Target (use -Force to overwrite, or Export-CertBundle.ps1)."
                         }
                     }
                     $DoPfx = $ExportPfx -and $PSCmdlet.ShouldProcess($PfxFile, 'Export PFX (private key + chain)')
                     $DoPem = $ExportPem -and $PSCmdlet.ShouldProcess($PemFile, 'Export PEM (certificate + chain + encrypted key)')
+                    $DoJks = $ExportJks -and $PSCmdlet.ShouldProcess($JksFile, "Export JKS (private key + chain, alias '$($ExportTarget.Alias)')")
 
-                    if ($DoPfx -or $DoPem) {
+                    if ($DoPfx -or $DoPem -or $DoJks) {
                         $Chain = Get-CertificateChain -Certificate $Installed -ExtraCertificates $ChainCerts -IncludeRoot $PemIncludeRoot
                         if (-not $Chain.Complete) {
                             Write-Log 'The chain is incomplete (an intermediate or root is missing); exports hold only what was found.' 'WARN'
@@ -1394,6 +1598,13 @@ try {
                             $Pem += (ConvertTo-Pem -Data $Encrypted -Label 'ENCRYPTED PRIVATE KEY')
                             [IO.File]::WriteAllText($PemFile, $Pem, [Text.Encoding]::ASCII)
                             Write-Log "PEM exported: $PemFile (certificate + $($Chain.Issuers.Count) chain cert(s) + encrypted key)" 'OK'
+                        }
+                        if ($DoJks) {
+                            # Full chain, root included, as in the PFX.
+                            $JksChain = Get-CertificateChain -Certificate $Installed -ExtraCertificates $ChainCerts -IncludeRoot $true
+                            if (Test-Path -LiteralPath $JksFile) { Remove-Item -LiteralPath $JksFile -Force }
+                            Export-JksFile -Certificate $Installed -Issuers $JksChain.Issuers -Alias $ExportTarget.Alias -Password $Password -FilePath $JksFile
+                            Write-Log "JKS exported: $JksFile (alias '$($ExportTarget.Alias)', certificate + $($JksChain.Issuers.Count) chain cert(s) + key)" 'OK'
                         }
                         $Password.Dispose()
                     }

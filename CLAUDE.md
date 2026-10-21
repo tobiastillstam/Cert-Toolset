@@ -23,6 +23,11 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
   (Pkcs12Info + C# key check); the Windows loader result is only a warning.
   Confirmed on PS 7.0 / Server 2016 with a real (non-lab) CA certificate:
   AES PFX + PEM exported, full chain, managed check passed, expected warning.
+- 2026-10-21: v1.2.0 - export folder = certificate CN (no _yyyyMM); opt-in JKS
+  export for a Java 8u161 / Tomcat 7 target. JKS verified with Java 8 keytool
+  (list, key recovery via -importkeystore, key matches cert) on PS 5.1 + 7.6
+  with a test chain in CurrentUser. Not yet tested: elevated end-to-end run,
+  Tomcat loading the JKS.
 
 ## Design decisions
 
@@ -36,6 +41,11 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
 - PEM: native PowerShell, one combined file (cert + chain + encrypted PKCS#8).
 - PFX: `Export-PfxCertificate` on PS 5.1, .NET `Pkcs12Builder` on PS 7 (the PKI
   module is Windows PowerShell-only). No OpenSSL dependency.
+- JKS: native writer (Sun KeyProtector + "Mighty Aphrodite" digest), no Java
+  dependency. Classic JKS on purpose: Java 8 < 8u301 cannot read AES PKCS12.
+  Alias = Friendly Name lower-cased (Java looks aliases up in lower case).
+  Opt-in only; never part of the default formats.
+- Export folder = certificate CN (renewals share it); files = Friendly Name.
 - `Test-CertRequest.ps1` has no `#Requires -RunAsAdministrator` on purpose
   (runs on many machines as non-admin).
 - Static analysis: `Invoke-ScriptAnalyzer -Path . -Settings .\PSScriptAnalyzerSettings.psd1`.

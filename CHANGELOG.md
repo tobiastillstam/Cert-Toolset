@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-21
+
+### Added
+- Java KeyStore (JKS) export, opt-in: `-ExportJks` in `Complete-CertRequest.ps1`
+  1.3.0 and `-Format Jks` in `Export-CertBundle.ps1` 1.2.0 (the default formats
+  stay PFX and PEM). Classic JKS, as read by Java 8 / Tomcat 7 with
+  `keystoreType="JKS"`: private key and full chain under the alias
+  `<FriendlyName>` (lower case), one password for keystore and key. Written
+  natively (no Java needed) and read back before it is saved (integrity digest,
+  chain, private key). Verified with Java 8 `keytool`.
+
+### Changed
+- Export folder is now the certificate's CN instead of the Friendly Name, so the
+  `_yyyyMM` date is gone from folder names and renewals share a folder
+  (`Exports\app01.contoso.local\app01.contoso.local_202610.pfx`). File names
+  keep the full Friendly Name. Certificates without a CN use the Friendly Name
+  as before. Existing exports in `Exports\<FriendlyName>\` are not moved.
+- Password dialog text mentions PFX/PEM/JKS.
+
 ## [1.1.0] - 2026-10-20
 
 ### Changed
@@ -72,6 +91,7 @@ First public release.
 - New: `-WhatIf` created folders; declining the INF step under `-Confirm`
   still ran certreq against a missing/stale INF.
 
-[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tobiastillstam/Cert-Toolset/releases/tag/v1.0.0
