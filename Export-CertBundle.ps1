@@ -79,12 +79,15 @@
     Author        : Tobias Tillstam, Tillnet
     Webpage       : https://tillnet.se
     GitHub        : https://github.com/tobiastillstam
-    Version       : 1.2.0
+    Version       : 1.2.1
     Date Created  : 2026-10-16
     Last Modified : 2026-10-21
 
     Change Log
     ----------
+    1.2.1 (2026-10-21) - JKS export failed on PowerShell 7.0 ("unexpected
+                          header"): the JKS magic no longer uses a hex literal,
+                          which 7.0 parses as a negative number.
     1.2.0 (2026-10-21) - Export folder is the certificate's CN (no _yyyyMM), so
                           renewals share it; file names keep the Friendly Name.
                           New opt-in -Format Jks: native JKS keystore, read
@@ -669,7 +672,7 @@ function New-JksKeystore {
     $Now = [long]([DateTime]::UtcNow - $Epoch).TotalMilliseconds
 
     $Out = New-Object 'System.Collections.Generic.List[byte]'
-    $Out.AddRange((ConvertTo-BigEndian -Value 0xFEEDFEEDL -Size 4))   # magic
+    $Out.AddRange([byte[]](254, 237, 254, 237))              # magic FE ED FE ED
     $Out.AddRange((ConvertTo-BigEndian -Value 2 -Size 4))            # version
     $Out.AddRange((ConvertTo-BigEndian -Value 1 -Size 4))            # entry count
     $Out.AddRange((ConvertTo-BigEndian -Value 1 -Size 4))            # tag: private key entry
@@ -696,9 +699,11 @@ function Test-JksKeystore {
     for ($i = 0; $i -lt 20; $i++) {
         if ($Digest[$i] -ne $Data[$Body + $i]) { throw 'JKS check failed: the integrity digest does not verify with the password.' }
     }
-    if ((ConvertFrom-BigEndian -Data $Data -Offset 0 -Size 4) -ne 0xFEEDFEEDL -or (ConvertFrom-BigEndian -Data $Data -Offset 4 -Size 4) -ne 2 -or
-        (ConvertFrom-BigEndian -Data $Data -Offset 8 -Size 4) -ne 1 -or (ConvertFrom-BigEndian -Data $Data -Offset 12 -Size 4) -ne 1) {
-        throw 'JKS check failed: unexpected header or entry type.'
+    # Magic FEEDFEED as decimal: hex literals of this size parse differently
+    # across PowerShell versions (negative Int32/Int64 in some).
+    $Header = @(0, 4, 8, 12 | ForEach-Object { ConvertFrom-BigEndian -Data $Data -Offset $_ -Size 4 })
+    if ($Header[0] -ne 4277010157 -or $Header[1] -ne 2 -or $Header[2] -ne 1 -or $Header[3] -ne 1) {
+        throw ('JKS check failed: unexpected header (magic 0x{0:X8}, version {1}, entries {2}, entry type {3}).' -f $Header[0], $Header[1], $Header[2], $Header[3])
     }
     $Pos = 16
     $Pos += 2 + (ConvertFrom-BigEndian -Data $Data -Offset $Pos -Size 2) + 8            # alias, date

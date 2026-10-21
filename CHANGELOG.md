@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-21
+
+### Fixed
+- JKS export failed on PowerShell 7.0 with "JKS check failed: unexpected header
+  or entry type" (`Complete-CertRequest.ps1` 1.3.1, `Export-CertBundle.ps1`
+  1.2.1). PowerShell 7.0 parses the hex literal `0xFEEDFEEDL` (the JKS magic)
+  as a negative number, so the read-back check rejected a valid keystore; no
+  file was written. The magic is now written as bytes and checked as a decimal
+  value, and the error shows the header values it found. Verified with Java 8
+  `keytool` on PowerShell 5.1, 7.0.13 and 7.6.
+
 ## [1.2.0] - 2026-10-21
 
 ### Added
@@ -91,7 +102,8 @@ First public release.
 - New: `-WhatIf` created folders; declining the INF step under `-Confirm`
   still ran certreq against a missing/stale INF.
 
-[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tobiastillstam/Cert-Toolset/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tobiastillstam/Cert-Toolset/releases/tag/v1.0.0

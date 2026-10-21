@@ -3,7 +3,7 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE)
 ![Platform](https://img.shields.io/badge/Windows%20Server-certificates-0078D6)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.1-blue)
 
 PowerShell toolset for certificate management on Windows Server: create a CSR,
 check it, complete it with the CA response, and export the certificate as PFX,
@@ -170,7 +170,7 @@ openssl pkey -in name.pem -out name.key
 - Tested elevated on Windows 11 (PS 5.1 and 7.6) against the Local Machine
   store with a lab CA (root + issuing CA). PFX and PEM output verified with
   OpenSSL. JKS output verified with Java 8 `keytool` (integrity, key recovery,
-  conversion to PKCS12) on PS 5.1 and 7.6.
+  conversion to PKCS12) on PS 5.1, 7.0 and 7.6.
 - Not yet tested: actual removal by `-RemoveStaleRequests` (only `-WhatIf`),
   responses from a public CA, and a JKS loaded by Tomcat itself.
 

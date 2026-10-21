@@ -28,6 +28,10 @@ Public repo. Owner: Tobias Tillstam / Tillnet. License: MIT.
   (list, key recovery via -importkeystore, key matches cert) on PS 5.1 + 7.6
   with a test chain in CurrentUser. Not yet tested: elevated end-to-end run,
   Tomcat loading the JKS.
+- 2026-10-21: v1.2.1 - first real run (PS 7.0) failed the JKS read-back:
+  PS 7.0 parses `0xFEEDFEEDL` as negative. Fixed (no large hex literals);
+  reproduced and verified with a portable PS 7.0.13 + keytool. Rule: never use
+  hex literals >= 0x80000000 in these scripts - PS versions disagree on them.
 
 ## Design decisions
 
